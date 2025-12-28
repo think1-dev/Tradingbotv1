@@ -384,14 +384,23 @@ class GapManager:
     def _build_day_candidates(
         self, signals: List["DaySignal"]
     ) -> List[GapCandidate]:
-        """Build gap candidates from day signals."""
+        """Build gap candidates from day signals using pre-calculated stop_distance."""
         candidates = []
 
         for sig in signals:
             direction = (getattr(sig, "direction", None) or "LONG").upper()
             entry = float(sig.entry_price)
             stop = float(sig.stop_price)
-            stop_distance = abs(entry - stop)
+
+            # Use pre-calculated stop_distance from signal (persisted from CSV load)
+            stop_distance = getattr(sig, "stop_distance", 0.0)
+            if stop_distance <= 0:
+                # Fallback: calculate if not pre-calculated (legacy signals)
+                stop_distance = abs(entry - stop)
+                self.logger.debug(
+                    "[GAP] Fallback stop_distance calculation for %s: %.2f",
+                    sig.symbol, stop_distance,
+                )
 
             # Determine gap direction needed
             # Day LONG: needs gap DOWN (open < entry)
@@ -418,14 +427,23 @@ class GapManager:
     def _build_swing_candidates(
         self, signals: List["SwingSignal"]
     ) -> List[GapCandidate]:
-        """Build gap candidates from swing signals."""
+        """Build gap candidates from swing signals using pre-calculated stop_distance."""
         candidates = []
 
         for sig in signals:
             entry = float(sig.entry_price)
             stop = float(sig.stop_price)
-            stop_distance = abs(entry - stop)
             strategy_lower = (sig.strategy_id or "").lower()
+
+            # Use pre-calculated stop_distance from signal (persisted from CSV load)
+            stop_distance = getattr(sig, "stop_distance", 0.0)
+            if stop_distance <= 0:
+                # Fallback: calculate if not pre-calculated (legacy signals)
+                stop_distance = abs(entry - stop)
+                self.logger.debug(
+                    "[GAP] Fallback stop_distance calculation for %s: %.2f",
+                    sig.symbol, stop_distance,
+                )
 
             # Determine gap direction based on strategy type
             # Swing MOMO/Breakout: needs gap UP (open > entry)

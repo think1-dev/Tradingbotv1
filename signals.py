@@ -47,6 +47,7 @@ class DaySignal:
     stop_price: float       # AuxPrice
     shares: int             # integer share size
     source_file: str        # CSV filename for audit
+    stop_distance: float = 0.0  # Pre-calculated |entry - stop|, persisted for gap trades
 
 
 @dataclass
@@ -58,6 +59,7 @@ class SwingSignal:
     stop_price: float       # Stop
     shares: int
     source_file: str        # CSV filename for audit
+    stop_distance: float = 0.0  # Pre-calculated |entry - stop|, persisted for gap trades
 
 
 class CsvLoader:
@@ -160,6 +162,9 @@ class CsvLoader:
                         )
                         continue
 
+                    # Pre-calculate stop distance for gap trades
+                    stop_distance = abs(entry_price - stop_price)
+
                     signal = DaySignal(
                         strategy_id=strategy,
                         symbol=symbol,
@@ -169,6 +174,7 @@ class CsvLoader:
                         stop_price=stop_price,
                         shares=shares,
                         source_file=filename,
+                        stop_distance=stop_distance,
                     )
                     signals.append(signal)
 
@@ -255,6 +261,9 @@ class CsvLoader:
                         )
                         continue
 
+                    # Pre-calculate stop distance for gap trades
+                    stop_distance = abs(entry_price - stop_price)
+
                     signal = SwingSignal(
                         strategy_id=strategy,
                         symbol=symbol,
@@ -263,6 +272,7 @@ class CsvLoader:
                         stop_price=stop_price,
                         shares=shares,
                         source_file=filename,
+                        stop_distance=stop_distance,
                     )
                     signals.append(signal)
 
@@ -279,3 +289,38 @@ class CsvLoader:
             f"({loaded_rows} rows, {skipped_rows} skipped).",
         )
         return signals
+
+
+# === Cache restoration helpers ===
+
+def restore_day_signal_from_cache(cached: dict) -> DaySignal:
+    """Restore a DaySignal object from cached dict data."""
+    trade_date = cached.get("trade_date")
+    if isinstance(trade_date, str):
+        trade_date = date.fromisoformat(trade_date)
+
+    return DaySignal(
+        strategy_id=cached["strategy_id"],
+        symbol=cached["symbol"],
+        trade_date=trade_date,
+        direction=cached["direction"],
+        entry_price=float(cached["entry_price"]),
+        stop_price=float(cached["stop_price"]),
+        shares=int(cached["shares"]),
+        source_file=cached.get("source_file", ""),
+        stop_distance=float(cached.get("stop_distance", 0.0)),
+    )
+
+
+def restore_swing_signal_from_cache(cached: dict) -> SwingSignal:
+    """Restore a SwingSignal object from cached dict data."""
+    return SwingSignal(
+        strategy_id=cached["strategy_id"],
+        symbol=cached["symbol"],
+        direction=cached["direction"],
+        entry_price=float(cached["entry_price"]),
+        stop_price=float(cached["stop_price"]),
+        shares=int(cached["shares"]),
+        source_file=cached.get("source_file", ""),
+        stop_distance=float(cached.get("stop_distance", 0.0)),
+    )

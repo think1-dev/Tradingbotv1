@@ -51,8 +51,12 @@ from time_utils import (
     get_day_stop_time_pt,
     get_day_exit_time_pt,
 )
-from signals import CsvLoader
-# DaySignal, SwingSignal not needed directly here
+from signals import (
+    CsvLoader,
+    BASKET_DIR,
+    restore_day_signal_from_cache,
+    restore_swing_signal_from_cache,
+)
 from state_manager import StateManager
 from orders import build_day_bracket, build_swing_bracket
 from strategy_engine import StrategyEngine
@@ -126,12 +130,36 @@ def main() -> None:
     cap_manager = CapManager(logger, state_mgr)
     logger.info("[STATUS] CapManager initialized and wired to StateManager.")
 
-    # === Phase 3: CSV loader ===
+    # === Phase 3: CSV loader with caching ===
     loader = CsvLoader(logger)
     today_pt = now_pt().date()
 
-    day_signals = loader.load_day_signals(today_pt)
-    swing_signals = loader.load_swing_signals(today_pt)
+    # Try to restore from cache first (preserves pre-calculated stop_distance)
+    day_csv_path = BASKET_DIR / f"daytrades_{today_pt.strftime('%Y%m%d')}.csv"
+    swing_csv_path = BASKET_DIR / f"swingtrades_{today_pt.strftime('%Y%m%d')}.csv"
+
+    # Check for cached day signals
+    cached_day = state_mgr.signal_cache.get_cached_day_signals(today_pt, day_csv_path)
+    if cached_day is not None:
+        day_signals = [restore_day_signal_from_cache(s) for s in cached_day]
+        logger.info("[CACHE] Restored %d day signals from cache.", len(day_signals))
+    else:
+        day_signals = loader.load_day_signals(today_pt)
+        if day_signals and day_csv_path.exists():
+            state_mgr.signal_cache.cache_day_signals(today_pt, day_csv_path, day_signals)
+
+    # Check for cached swing signals
+    cached_swing = state_mgr.signal_cache.get_cached_swing_signals(today_pt, swing_csv_path)
+    if cached_swing is not None:
+        swing_signals = [restore_swing_signal_from_cache(s) for s in cached_swing]
+        logger.info("[CACHE] Restored %d swing signals from cache.", len(swing_signals))
+    else:
+        swing_signals = loader.load_swing_signals(today_pt)
+        if swing_signals and swing_csv_path.exists():
+            state_mgr.signal_cache.cache_swing_signals(today_pt, swing_csv_path, swing_signals)
+
+    # Clean up old cache entries (older than 7 days)
+    state_mgr.signal_cache.cleanup_old_cache(today_pt)
 
     logger.info(
         "[CSV] Phase 3 summary: %d Day signals, %d Swing signals loaded for %s.",

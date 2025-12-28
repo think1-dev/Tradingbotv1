@@ -337,6 +337,257 @@ class PendingFlattens:
         return False
 
 
+class SignalCache:
+    """
+    Caches loaded signals with pre-calculated stop distances.
+
+    Signals are cached per-date (day signals) or per-week (swing signals)
+    and persist until a new CSV replaces them.
+
+    Stored in state.json under "signal_cache":
+    {
+        "day": {
+            "YYYY-MM-DD": {
+                "source_file": "daytrades_20250108.csv",
+                "source_hash": "abc123...",
+                "loaded_at": "2025-01-08T06:00:00",
+                "signals": [
+                    {
+                        "strategy_id": "DayLong1",
+                        "symbol": "AAPL",
+                        "entry_price": 150.0,
+                        "stop_price": 149.0,
+                        "stop_distance": 1.0,
+                        ...
+                    },
+                    ...
+                ]
+            }
+        },
+        "swing": {
+            "YYYY-MM-DD": {  # Monday of week
+                "source_file": "swingtrades_20250106.csv",
+                "source_hash": "def456...",
+                "loaded_at": "2025-01-06T06:00:00",
+                "signals": [...]
+            }
+        }
+    }
+    """
+
+    def __init__(self, state: Dict[str, Any], save_callback, logger: logging.Logger):
+        self.state = state
+        self._save = save_callback
+        self.logger = logger
+
+    def _get_cache_bucket(self) -> Dict[str, Any]:
+        """Get or create the signal_cache section."""
+        if "signal_cache" not in self.state:
+            self.state["signal_cache"] = {"day": {}, "swing": {}}
+        cache = self.state["signal_cache"]
+        if "day" not in cache:
+            cache["day"] = {}
+        if "swing" not in cache:
+            cache["swing"] = {}
+        return cache
+
+    def _compute_file_hash(self, file_path: Path) -> str:
+        """Compute a simple hash of CSV file contents for change detection."""
+        import hashlib
+        try:
+            with file_path.open("rb") as f:
+                return hashlib.md5(f.read()).hexdigest()[:16]
+        except Exception:
+            return ""
+
+    def get_cached_day_signals(self, d: date, source_file: Path) -> Optional[List[Dict[str, Any]]]:
+        """
+        Get cached day signals if the cache is valid.
+
+        Returns None if:
+        - No cache exists for this date
+        - Source file has changed (hash mismatch)
+        - Cache is from a different source file
+        """
+        cache = self._get_cache_bucket()
+        key = d.isoformat()
+        entry = cache["day"].get(key)
+
+        if entry is None:
+            return None
+
+        # Check if source file matches
+        if entry.get("source_file") != source_file.name:
+            self.logger.info(
+                "[CACHE] Day cache source mismatch for %s: cached=%s, current=%s",
+                key, entry.get("source_file"), source_file.name,
+            )
+            return None
+
+        # Check if file hash matches (file hasn't changed)
+        current_hash = self._compute_file_hash(source_file)
+        if entry.get("source_hash") != current_hash:
+            self.logger.info(
+                "[CACHE] Day cache hash mismatch for %s (file changed), reloading",
+                key,
+            )
+            return None
+
+        self.logger.info(
+            "[CACHE] Using cached day signals for %s (%d signals)",
+            key, len(entry.get("signals", [])),
+        )
+        return entry.get("signals", [])
+
+    def get_cached_swing_signals(self, d: date, source_file: Path) -> Optional[List[Dict[str, Any]]]:
+        """
+        Get cached swing signals if the cache is valid.
+
+        Returns None if cache is invalid or missing.
+        """
+        cache = self._get_cache_bucket()
+        monday = monday_of_week(d)
+        key = monday.isoformat()
+        entry = cache["swing"].get(key)
+
+        if entry is None:
+            return None
+
+        # Check if source file matches
+        if entry.get("source_file") != source_file.name:
+            self.logger.info(
+                "[CACHE] Swing cache source mismatch for %s: cached=%s, current=%s",
+                key, entry.get("source_file"), source_file.name,
+            )
+            return None
+
+        # Check if file hash matches
+        current_hash = self._compute_file_hash(source_file)
+        if entry.get("source_hash") != current_hash:
+            self.logger.info(
+                "[CACHE] Swing cache hash mismatch for %s (file changed), reloading",
+                key,
+            )
+            return None
+
+        self.logger.info(
+            "[CACHE] Using cached swing signals for %s (%d signals)",
+            key, len(entry.get("signals", [])),
+        )
+        return entry.get("signals", [])
+
+    def cache_day_signals(self, d: date, source_file: Path, signals: List[Any]) -> None:
+        """Cache day signals with their pre-calculated stop distances."""
+        from dataclasses import asdict
+        from time_utils import now_pt
+
+        cache = self._get_cache_bucket()
+        key = d.isoformat()
+
+        # Convert signals to dicts, handling date serialization
+        signal_dicts = []
+        for sig in signals:
+            sig_dict = asdict(sig)
+            # Convert date to string for JSON serialization
+            if "trade_date" in sig_dict and hasattr(sig_dict["trade_date"], "isoformat"):
+                sig_dict["trade_date"] = sig_dict["trade_date"].isoformat()
+            signal_dicts.append(sig_dict)
+
+        cache["day"][key] = {
+            "source_file": source_file.name,
+            "source_hash": self._compute_file_hash(source_file),
+            "loaded_at": now_pt().isoformat(),
+            "signals": signal_dicts,
+        }
+        self._save()
+        self.logger.info(
+            "[CACHE] Cached %d day signals for %s (file=%s)",
+            len(signals), key, source_file.name,
+        )
+
+    def cache_swing_signals(self, d: date, source_file: Path, signals: List[Any]) -> None:
+        """Cache swing signals with their pre-calculated stop distances."""
+        from dataclasses import asdict
+        from time_utils import now_pt
+
+        cache = self._get_cache_bucket()
+        monday = monday_of_week(d)
+        key = monday.isoformat()
+
+        # Convert signals to dicts
+        signal_dicts = []
+        for sig in signals:
+            sig_dict = asdict(sig)
+            signal_dicts.append(sig_dict)
+
+        cache["swing"][key] = {
+            "source_file": source_file.name,
+            "source_hash": self._compute_file_hash(source_file),
+            "loaded_at": now_pt().isoformat(),
+            "signals": signal_dicts,
+        }
+        self._save()
+        self.logger.info(
+            "[CACHE] Cached %d swing signals for week of %s (file=%s)",
+            len(signals), key, source_file.name,
+        )
+
+    def get_day_signal_by_key(self, d: date, symbol: str, strategy_id: str) -> Optional[Dict[str, Any]]:
+        """Get a specific cached day signal by symbol and strategy."""
+        cache = self._get_cache_bucket()
+        key = d.isoformat()
+        entry = cache["day"].get(key)
+        if entry is None:
+            return None
+
+        for sig in entry.get("signals", []):
+            if sig.get("symbol") == symbol and sig.get("strategy_id") == strategy_id:
+                return sig
+        return None
+
+    def get_swing_signal_by_key(self, d: date, symbol: str, strategy_id: str) -> Optional[Dict[str, Any]]:
+        """Get a specific cached swing signal by symbol and strategy."""
+        cache = self._get_cache_bucket()
+        monday = monday_of_week(d)
+        key = monday.isoformat()
+        entry = cache["swing"].get(key)
+        if entry is None:
+            return None
+
+        for sig in entry.get("signals", []):
+            if sig.get("symbol") == symbol and sig.get("strategy_id") == strategy_id:
+                return sig
+        return None
+
+    def cleanup_old_cache(self, d: date, keep_days: int = 7) -> None:
+        """Remove cache entries older than keep_days."""
+        cache = self._get_cache_bucket()
+        cutoff = d - timedelta(days=keep_days)
+
+        # Clean day cache
+        expired_day = [
+            key for key in cache["day"]
+            if date.fromisoformat(key) < cutoff
+        ]
+        for key in expired_day:
+            del cache["day"][key]
+
+        # Clean swing cache
+        expired_swing = [
+            key for key in cache["swing"]
+            if date.fromisoformat(key) < cutoff
+        ]
+        for key in expired_swing:
+            del cache["swing"][key]
+
+        if expired_day or expired_swing:
+            self._save()
+            self.logger.info(
+                "[CACHE] Cleaned up %d day cache entries, %d swing cache entries",
+                len(expired_day), len(expired_swing),
+            )
+
+
 class StateManager:
     """
     Manages persistent caps & open-position counts in logs/state.json.
@@ -370,6 +621,8 @@ class StateManager:
         self.blocked = BlockedEntries(self.state, self._save, self.logger)
         # Initialize pending flattens tracker
         self.pending_flattens = PendingFlattens(self.state, self._save, self.logger)
+        # Initialize signal cache for pre-calculated stop distances
+        self.signal_cache = SignalCache(self.state, self._save, self.logger)
 
     # --- internal load/save ---
 
@@ -383,6 +636,7 @@ class StateManager:
                     self.state["swing"] = data.get("swing", {}) or {}
                     self.state["blocked_entries"] = data.get("blocked_entries", {"week": {}, "day": {}})
                     self.state["pending_flattens"] = data.get("pending_flattens", {"positions": []})
+                    self.state["signal_cache"] = data.get("signal_cache", {"day": {}, "swing": {}})
                 else:
                     raise ValueError("state.json root is not a dict")
                 self.logger.info("[SYNC] Loaded state from %s.", self.path)
@@ -392,10 +646,10 @@ class StateManager:
                     self.path,
                     exc,
                 )
-                self.state = {"day": {}, "swing": {}, "blocked_entries": {"week": {}, "day": {}}, "pending_flattens": {"positions": []}}
+                self.state = {"day": {}, "swing": {}, "blocked_entries": {"week": {}, "day": {}}, "pending_flattens": {"positions": []}, "signal_cache": {"day": {}, "swing": {}}}
         else:
             self.logger.info("[SYNC] No existing state file; starting fresh.")
-            self.state = {"day": {}, "swing": {}, "blocked_entries": {"week": {}, "day": {}}, "pending_flattens": {"positions": []}}
+            self.state = {"day": {}, "swing": {}, "blocked_entries": {"week": {}, "day": {}}, "pending_flattens": {"positions": []}, "signal_cache": {"day": {}, "swing": {}}}
 
     def _ensure_file_exists(self) -> None:
         """
