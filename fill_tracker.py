@@ -136,6 +136,9 @@ class FillTracker:
         # order_id -> trade_date
         self._pending_reentry_conversions: Dict[int, date] = {}
 
+        # Gap order completion callback (set by GapManager)
+        self._on_gap_fill_callback = None
+
         # Lock to protect concurrent access to shared dictionaries from event handlers
         self._lock = threading.Lock()
 
@@ -176,6 +179,15 @@ class FillTracker:
         """
         self._on_reentry_fill_callback = callback
 
+    def set_gap_fill_callback(self, callback) -> None:
+        """
+        Register a callback for when gap MKT orders complete fill.
+
+        Called when a gap MKT order is completely filled, so stop/timed can be placed.
+        Callback signature: callback(order_id: int, fill_price: float, fill_qty: int) -> bool
+        """
+        self._on_gap_fill_callback = callback
+
     def register_pending_reentry_conversion(self, order_id: int, trade_date: date) -> None:
         """
         Register a re-entry order that needs slot conversion when it fills.
@@ -188,6 +200,45 @@ class FillTracker:
                 "[FILL_TRACKER] Registered pending re-entry conversion for order %d",
                 order_id,
             )
+
+    def register_gap_bracket_completion(
+        self,
+        parent_order_id: int,
+        stop_order_id: int,
+        timed_order_id: int,
+        symbol: str,
+        strategy_id: str,
+        signal_type: str,
+        direction: str,
+        shares: int,
+    ) -> None:
+        """
+        Register a completed gap bracket after stop/timed orders are placed.
+
+        Called by GapManager.complete_gap_bracket() after placing stop/timed.
+        This updates the filled position with the new exit order IDs.
+        """
+        with self._lock:
+            if parent_order_id in self.filled_positions:
+                pos = self.filled_positions[parent_order_id]
+                pos.stop_order_id = stop_order_id
+                pos.timed_order_id = timed_order_id
+
+                # Track exit orders for position removal on fill
+                self._exit_to_parent[stop_order_id] = parent_order_id
+                self._exit_to_parent[timed_order_id] = parent_order_id
+                self._timed_exit_to_parent[timed_order_id] = parent_order_id
+
+                self.logger.info(
+                    "[FILL_TRACKER] Registered gap bracket completion: %s %s "
+                    "parent=%d stop=%d timed=%d",
+                    symbol, strategy_id, parent_order_id, stop_order_id, timed_order_id,
+                )
+            else:
+                self.logger.warning(
+                    "[FILL_TRACKER] Gap bracket completion for unknown parent %d",
+                    parent_order_id,
+                )
 
     def _setup_event_handlers(self) -> None:
         """Subscribe to IBKR fill/status events."""
@@ -299,6 +350,11 @@ class FillTracker:
             # Check if this is a timed exit cancel (needs flatten retry)
             if order_id in self._timed_exit_to_parent and status in ("Cancelled", "ApiCancelled", "Inactive"):
                 self._handle_timed_exit_cancel(order_id)
+                return
+
+            # Check if this is a pending gap order that needs bracket completion
+            if status == "Filled" and self._is_pending_gap_order(order_id):
+                self._handle_gap_order_fill(order_id, trade)
                 return
 
             # Check if this is a parent order we're tracking
@@ -502,6 +558,91 @@ class FillTracker:
                 self.logger.error(
                     "[FILL_TRACKER] Error in day cancel callback: %s", exc
                 )
+
+    def _is_pending_gap_order(self, order_id: int) -> bool:
+        """Check if an order is a pending gap order awaiting bracket completion."""
+        if self.state_mgr is None:
+            return False
+        return self.state_mgr.pending_gap_orders.is_pending_gap_order(order_id)
+
+    def _handle_gap_order_fill(self, order_id: int, trade: "Trade") -> None:
+        """
+        Handle a gap MKT order fill.
+
+        When a gap MKT order fills completely, call the gap completion callback
+        to place stop and timed exit orders.
+        """
+        if self.state_mgr is None:
+            self.logger.error(
+                "[FILL_TRACKER] Cannot handle gap fill - no state_mgr"
+            )
+            return
+
+        pending_gap = self.state_mgr.pending_gap_orders.get_pending(order_id)
+        if pending_gap is None:
+            self.logger.warning(
+                "[FILL_TRACKER] Gap order %d not found in pending_gap_orders",
+                order_id,
+            )
+            return
+
+        # Get fill details
+        filled_qty = int(trade.orderStatus.filled)
+        total_qty = pending_gap["shares"]
+        avg_price = float(trade.orderStatus.avgFillPrice or 0.0)
+
+        # Check if completely filled
+        if filled_qty < total_qty:
+            self.logger.info(
+                "[FILL_TRACKER] Gap order %d partial fill: %d/%d - waiting for complete fill",
+                order_id, filled_qty, total_qty,
+            )
+            return
+
+        self.logger.info(
+            "[FILL_TRACKER] Gap order %d complete fill: %d shares @ %.2f",
+            order_id, filled_qty, avg_price,
+        )
+
+        # Create FilledPosition for conflict tracking (before stop/timed are placed)
+        filled_pos = FilledPosition(
+            symbol=pending_gap["symbol"],
+            side=pending_gap["direction"],
+            kind=pending_gap["signal_type"],
+            strategy_id=pending_gap["strategy_id"],
+            qty=filled_qty,
+            fill_price=avg_price,
+            fill_time=now_pt(),
+            parent_order_id=order_id,
+            stop_order_id=None,  # Will be updated by register_gap_bracket_completion
+            timed_order_id=None,
+            trade_date=now_pt().date(),
+        )
+        self.filled_positions[order_id] = filled_pos
+
+        # Call gap completion callback (GapManager.complete_gap_bracket)
+        if self._on_gap_fill_callback is not None:
+            try:
+                success = self._on_gap_fill_callback(order_id, avg_price, filled_qty)
+                if success:
+                    self.logger.info(
+                        "[FILL_TRACKER] Gap bracket completed for order %d",
+                        order_id,
+                    )
+                else:
+                    self.logger.error(
+                        "[FILL_TRACKER] Gap bracket completion failed for order %d",
+                        order_id,
+                    )
+            except Exception as exc:
+                self.logger.error(
+                    "[FILL_TRACKER] Error in gap fill callback: %s", exc
+                )
+        else:
+            self.logger.warning(
+                "[FILL_TRACKER] No gap fill callback registered for order %d",
+                order_id,
+            )
 
     def _cancel_remaining_for_strategy(
         self, trade_type: str, trade_date: date, strategy_id: str

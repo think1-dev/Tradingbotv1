@@ -4,43 +4,36 @@ gap_manager.py
 Gap-at-Open Trade Manager for handling gap triggers at market open.
 
 Gap Logic:
-- Day LONG: Gap DOWN (open < entry) triggers MKT buy
-- Day SHORT: Gap UP (open > entry) triggers MKT sell
-- Swing MOMO: Gap UP (open > entry) triggers MKT buy
-- Swing Pullback: Gap DOWN (open < entry) triggers MKT buy
+- Day LONG / Swing Pullback / Swing Mean Reversion: Gap DOWN (open <= entry) triggers MKT buy
+- Day SHORT / Swing MOMO: Gap UP (open >= entry) triggers MKT sell/buy
 
 Gap Criteria:
-- Gap must fully cross the signal's entry price overnight
 - Single check at 6:30 PT exactly (first tick after open)
+- Check if open price is at or beyond entry price
 - If gap condition NOT met, signal remains armed for normal LMT fill
 
-Stop Recalculation:
-- Uses fixed dollar stop distance from open price
-- Stop distance preserved from original signal
-
-Persistence:
-- Stores prev_close per symbol (last RTH tick from previous day)
-- Persisted in state.json under "gap_data" key
+Execution Flow:
+1. Place single-leg MKT order
+2. Wait for complete fill (monitored by FillTracker)
+3. After fill, place stop + timed exit orders to complete bracket
+4. Stop price = fill_price ± stop_distance (preserves original risk)
 """
 
 from __future__ import annotations
 
-import json
 import logging
 import threading
-from dataclasses import dataclass, asdict
-from datetime import date, datetime, time
-from pathlib import Path
+from dataclasses import dataclass
+from datetime import date
 from typing import TYPE_CHECKING, Dict, List, Optional, Any, Tuple
 from zoneinfo import ZoneInfo
 
-from time_utils import now_pt, is_trading_day, get_week_ending_day, is_week_ending_day
-import market_calendar as mc
+from time_utils import now_pt
 
 if TYPE_CHECKING:
-    from ib_insync import IB, Ticker
+    from ib_insync import IB
     from signals import DaySignal, SwingSignal
-    from fill_tracker import FillTracker, FilledPosition
+    from fill_tracker import FillTracker
     from execution import OrderExecutor
     from state_manager import StateManager
     from cap_manager import CapManager
@@ -48,11 +41,6 @@ if TYPE_CHECKING:
     from reentry_manager import ReentryManager
 
 PT = ZoneInfo("America/Los_Angeles")
-STATE_PATH = Path("logs") / "state.json"
-
-# Default stop distances (can be overridden per strategy)
-DEFAULT_DAY_STOP_DISTANCE = 0.50  # $0.50 fixed stop
-DEFAULT_SWING_STOP_DISTANCE = 1.00  # $1.00 fixed stop
 
 
 @dataclass
@@ -66,16 +54,7 @@ class GapCandidate:
     original_stop: float
     shares: int
     gap_direction_needed: str  # "UP" or "DOWN"
-    stop_distance: float  # Fixed dollar stop distance
-
-
-@dataclass
-class PrevCloseData:
-    """Previous close data for a symbol."""
-    symbol: str
-    prev_close: float
-    close_date: str  # ISO format date
-    updated_at: str  # ISO format datetime
+    stop_distance: float  # Pre-calculated from signal
 
 
 class GapManager:
@@ -83,17 +62,16 @@ class GapManager:
     Manages gap-at-open trade detection and execution.
 
     Lifecycle:
-    1. EOD: Store prev_close for each symbol (last RTH tick)
-    2. Market Open (6:30 PT): Run gap detection
-    3. For each signal, check if gap crosses entry level
-    4. Execute gap MKT orders with recalculated stops
-    5. Mark signals as triggered to prevent duplicate entries
+    1. Market Open (6:30 PT): Run gap detection
+    2. For each signal, check if open price gaps through entry
+    3. Place single-leg MKT order (position unprotected)
+    4. Wait for complete fill
+    5. Complete bracket with stop + timed orders
 
     Integration:
-    - Uses ConflictResolver before gap entries (creates re-entry candidates)
+    - Uses ConflictResolver before gap entries
     - Uses CapManager for cap checks
-    - Uses FillTracker for order registration
-    - Coordinates with ReentryManager (both can execute simultaneously)
+    - Uses FillTracker for fill monitoring and bracket completion
     """
 
     def __init__(
@@ -118,163 +96,15 @@ class GapManager:
         self.reentry_manager = reentry_manager
         self._swing_signals_by_key = swing_signals_by_key or {}
 
-        # Previous close data: symbol -> PrevCloseData
-        self.prev_closes: Dict[str, PrevCloseData] = {}
-
         # Track if gap check has run today
         self._gap_check_date: Optional[date] = None
 
         # Lock to prevent concurrent gap check execution
         self._gap_check_lock = threading.Lock()
 
-        # Load persisted prev_close data
-        self._load_prev_closes()
-
-        self.logger.info(
-            "[GAP] Initialized with %d prev_close entries.",
-            len(self.prev_closes),
-        )
+        self.logger.info("[GAP] Initialized (simplified - no prev_close tracking).")
 
     # === Public Interface ===
-
-    def check_and_fetch_stale_prev_closes(self, symbols: List[str]) -> None:
-        """
-        Check if prev_close data is stale and fetch historical data if needed.
-
-        Called at startup to ensure gap check has valid data.
-        Data is considered stale if it's more than 1 trading day old.
-
-        Args:
-            symbols: List of symbols to check
-        """
-        today = now_pt().date()
-
-        # Determine the previous trading day
-        from market_calendar import get_previous_trading_day
-        prev_trading_day = get_previous_trading_day(today)
-
-        if prev_trading_day is None:
-            self.logger.warning("[GAP] Could not determine previous trading day.")
-            return
-
-        stale_symbols = []
-        for symbol in symbols:
-            symbol = symbol.upper()
-            data = self.prev_closes.get(symbol)
-
-            if data is None:
-                stale_symbols.append(symbol)
-                continue
-
-            # Check if data is from the previous trading day
-            try:
-                close_date = date.fromisoformat(data.close_date)
-                if close_date < prev_trading_day:
-                    stale_symbols.append(symbol)
-            except (ValueError, TypeError):
-                stale_symbols.append(symbol)
-
-        if not stale_symbols:
-            self.logger.info("[GAP] All prev_close data is current.")
-            return
-
-        self.logger.info(
-            "[GAP] Found %d symbols with stale prev_close data, fetching historical: %s",
-            len(stale_symbols),
-            ", ".join(stale_symbols[:5]) + ("..." if len(stale_symbols) > 5 else ""),
-        )
-
-        # Fetch historical data for stale symbols
-        for symbol in stale_symbols:
-            self._fetch_historical_close(symbol, prev_trading_day)
-
-        # Save updated data
-        self._save_prev_closes()
-
-    def _fetch_historical_close(self, symbol: str, target_date: date) -> None:
-        """
-        Fetch historical close price for a symbol from IBKR.
-
-        Args:
-            symbol: Stock symbol
-            target_date: The date to fetch close price for
-        """
-        try:
-            from ib_insync import Stock
-
-            contract = Stock(symbol, "SMART", "USD")
-            self.ib.qualifyContracts(contract)
-
-            # Request 1 day of historical data
-            bars = self.ib.reqHistoricalData(
-                contract,
-                endDateTime="",
-                durationStr="2 D",
-                barSizeSetting="1 day",
-                whatToShow="TRADES",
-                useRTH=True,
-                formatDate=1,
-            )
-
-            if bars:
-                # Get the most recent bar's close
-                last_bar = bars[-1]
-                close_price = last_bar.close
-                bar_date = last_bar.date
-
-                self.prev_closes[symbol.upper()] = PrevCloseData(
-                    symbol=symbol.upper(),
-                    prev_close=close_price,
-                    close_date=str(bar_date)[:10] if isinstance(bar_date, datetime) else str(bar_date),
-                    updated_at=now_pt().isoformat(),
-                )
-
-                self.logger.info(
-                    "[GAP] Fetched historical close for %s: %.2f (date=%s)",
-                    symbol,
-                    close_price,
-                    bar_date,
-                )
-            else:
-                self.logger.warning(
-                    "[GAP] No historical data returned for %s", symbol
-                )
-
-        except Exception as exc:
-            self.logger.warning(
-                "[GAP] Failed to fetch historical close for %s: %s",
-                symbol,
-                exc,
-            )
-
-    def store_prev_close(self, symbol: str, price: float) -> None:
-        """
-        Store the previous close price for a symbol.
-
-        Called at EOD (end of RTH) with the last tick price.
-        """
-        today = now_pt().date()
-        self.prev_closes[symbol.upper()] = PrevCloseData(
-            symbol=symbol.upper(),
-            prev_close=price,
-            close_date=today.isoformat(),
-            updated_at=now_pt().isoformat(),
-        )
-        self._save_prev_closes()
-
-        self.logger.info(
-            "[GAP] Stored prev_close for %s: %.2f (date=%s)",
-            symbol,
-            price,
-            today,
-        )
-
-    def get_prev_close(self, symbol: str) -> Optional[float]:
-        """Get the previous close price for a symbol."""
-        data = self.prev_closes.get(symbol.upper())
-        if data is None:
-            return None
-        return data.prev_close
 
     def run_gap_check(
         self,
@@ -296,8 +126,6 @@ class GapManager:
 
         Returns:
             Dict with "day_orders" and "swing_orders" lists of placed order IDs
-
-        Uses a lock to prevent concurrent execution from multiple threads.
         """
         with self._gap_check_lock:
             today = now_pt().date()
@@ -347,52 +175,97 @@ class GapManager:
 
             return results
 
-    def update_prev_close_from_ticker(self, symbol: str, ticker: "Ticker") -> None:
+    def complete_gap_bracket(
+        self,
+        order_id: int,
+        fill_price: float,
+        fill_qty: int,
+    ) -> bool:
         """
-        Update prev_close from a ticker at EOD.
+        Complete a gap bracket after MKT order fills.
 
-        Called during RTH to track the last price. The final call at
-        market close becomes the prev_close for the next day.
+        Called by FillTracker when a pending gap order is completely filled.
+
+        Args:
+            order_id: The filled MKT order ID
+            fill_price: Average fill price
+            fill_qty: Filled quantity
+
+        Returns:
+            True if bracket completed successfully, False otherwise
         """
-        # Use last price, or bid/ask midpoint if last is unavailable
-        price = None
-        if ticker.last is not None and ticker.last > 0:
-            price = ticker.last
-        elif ticker.bid is not None and ticker.ask is not None:
-            if ticker.bid > 0 and ticker.ask > 0:
-                price = (ticker.bid + ticker.ask) / 2.0
-
-        if price is not None:
-            self.prev_closes[symbol.upper()] = PrevCloseData(
-                symbol=symbol.upper(),
-                prev_close=price,
-                close_date=now_pt().date().isoformat(),
-                updated_at=now_pt().isoformat(),
+        # Get pending gap order data
+        pending = self.state_mgr.pending_gap_orders.get_pending(order_id)
+        if pending is None:
+            self.logger.error(
+                "[GAP] complete_gap_bracket called for unknown order %d", order_id
             )
-            # Don't save on every tick - save at EOD
+            return False
 
-    def save_all_prev_closes(self) -> None:
-        """Save all prev_close data to state.json. Call at EOD."""
-        self._save_prev_closes()
+        symbol = pending["symbol"]
+        strategy_id = pending["strategy_id"]
+        signal_type = pending["signal_type"]
+        direction = pending["direction"]
+        stop_distance = pending["stop_distance"]
+        shares = pending["shares"]
+
+        # Calculate new stop based on fill price
+        if direction == "LONG":
+            new_stop = fill_price - stop_distance
+        else:
+            new_stop = fill_price + stop_distance
+
         self.logger.info(
-            "[GAP] Saved %d prev_close entries to state.",
-            len(self.prev_closes),
+            "[GAP] Completing bracket for %s %s: fill=%.2f, stop=%.2f (distance=%.2f)",
+            symbol, strategy_id, fill_price, new_stop, stop_distance,
         )
+
+        try:
+            # Place stop and timed exit orders
+            success = self._place_stop_and_timed(
+                symbol=symbol,
+                strategy_id=strategy_id,
+                signal_type=signal_type,
+                direction=direction,
+                shares=shares,
+                stop_price=new_stop,
+                parent_order_id=order_id,
+            )
+
+            if success:
+                # Remove from pending
+                self.state_mgr.pending_gap_orders.remove_pending(order_id)
+                self.logger.info(
+                    "[GAP] Bracket complete for %s %s (order %d)",
+                    symbol, strategy_id, order_id,
+                )
+                return True
+            else:
+                self.logger.error(
+                    "[GAP] Failed to place stop/timed for %s %s",
+                    symbol, strategy_id,
+                )
+                return False
+
+        except Exception as exc:
+            self.logger.error(
+                "[GAP] Error completing bracket for %s: %s", symbol, exc
+            )
+            return False
 
     # === Internal Methods ===
 
     def _build_day_candidates(
         self, signals: List["DaySignal"]
     ) -> List[GapCandidate]:
-        """Build gap candidates from day signals using pre-calculated stop_distance."""
+        """Build gap candidates from day signals."""
         candidates = []
 
         for sig in signals:
             direction = (getattr(sig, "direction", None) or "LONG").upper()
 
-            # Determine gap direction needed
-            # Day LONG: needs gap DOWN (open < entry)
-            # Day SHORT: needs gap UP (open > entry)
+            # Day LONG: needs gap DOWN (open <= entry)
+            # Day SHORT: needs gap UP (open >= entry)
             gap_direction = "DOWN" if direction == "LONG" else "UP"
 
             candidates.append(GapCandidate(
@@ -404,7 +277,7 @@ class GapManager:
                 original_stop=float(sig.stop_price),
                 shares=sig.shares,
                 gap_direction_needed=gap_direction,
-                stop_distance=sig.stop_distance,  # Pre-calculated from CSV load
+                stop_distance=sig.stop_distance,
             ))
 
         return candidates
@@ -412,15 +285,14 @@ class GapManager:
     def _build_swing_candidates(
         self, signals: List["SwingSignal"]
     ) -> List[GapCandidate]:
-        """Build gap candidates from swing signals using pre-calculated stop_distance."""
+        """Build gap candidates from swing signals."""
         candidates = []
 
         for sig in signals:
             strategy_lower = (sig.strategy_id or "").lower()
 
-            # Determine gap direction based on strategy type
-            # Swing MOMO/Breakout: needs gap UP (open > entry)
-            # Swing Pullback/MeanRev: needs gap DOWN (open < entry)
+            # Swing MOMO/Breakout: needs gap UP (open >= entry)
+            # Swing Pullback/MeanRev: needs gap DOWN (open <= entry)
             gap_direction = "UP" if ("momo" in strategy_lower or "breakout" in strategy_lower) else "DOWN"
 
             candidates.append(GapCandidate(
@@ -432,7 +304,7 @@ class GapManager:
                 original_stop=float(sig.stop_price),
                 shares=sig.shares,
                 gap_direction_needed=gap_direction,
-                stop_distance=sig.stop_distance,  # Pre-calculated from CSV load
+                stop_distance=sig.stop_distance,
             ))
 
         return candidates
@@ -446,11 +318,11 @@ class GapManager:
         """
         Process a single gap candidate.
 
-        Returns order ID if gap trade was placed, None otherwise.
+        Returns order ID if gap MKT order was placed, None otherwise.
         """
         symbol = candidate.symbol
 
-        # Get open price (first tick)
+        # Get open price
         open_price = self._get_open_price(symbol)
         if open_price is None:
             self.logger.warning(
@@ -459,19 +331,8 @@ class GapManager:
             )
             return None
 
-        # Get prev_close
-        prev_close = self.get_prev_close(symbol)
-        if prev_close is None:
-            self.logger.warning(
-                "[GAP] No prev_close available for %s, skipping gap check.",
-                symbol,
-            )
-            return None
-
-        # Check gap condition
-        gap_met, gap_percent = self._check_gap_condition(
-            candidate, open_price, prev_close
-        )
+        # Check gap condition (simplified - just open vs entry)
+        gap_met = self._check_gap_condition(candidate, open_price)
 
         if not gap_met:
             self.logger.info(
@@ -488,12 +349,10 @@ class GapManager:
         # Gap condition met - check if symbol+strategy is blocked
         today = now_pt().date()
         if is_day:
-            # Day gap trades check both week and day blocks
             is_blocked, block_reason = self.state_mgr.blocked.is_blocked(
                 symbol, candidate.strategy_id, today
             )
         else:
-            # Swing gap trades only check week blocks
             is_blocked, block_reason = self.state_mgr.blocked.is_blocked(
                 symbol, candidate.strategy_id, today, check_week=True, check_day=False
             )
@@ -538,22 +397,16 @@ class GapManager:
             self._mark_signal_failed(symbol, candidate.strategy_id, runtimes)
             return None
 
-        # Calculate new stop based on open price
-        new_stop = self._calculate_gap_stop(candidate, open_price)
-
-        # Execute gap trade
-        order_id = self._execute_gap_trade(candidate, open_price, new_stop, is_day)
+        # Place single-leg MKT order (stop/timed added after fill)
+        order_id = self._place_gap_market_order(candidate, is_day)
 
         if order_id is not None:
-            self.logger.info(
-                "[GAP][TRIGGER] %s %s on %s - gap_%s=%.2f%%, entry=MKT@%.2f, stop=%.2f",
+            self.logger.warning(
+                "[GAP][TRIGGER] %s %s on %s - MKT order %d placed (UNPROTECTED until fill)",
                 candidate.signal_type,
                 candidate.direction,
                 symbol,
-                candidate.gap_direction_needed.lower(),
-                gap_percent,
-                open_price,
-                new_stop,
+                order_id,
             )
             # Mark signal as triggered
             self._mark_signal_triggered(symbol, candidate.strategy_id, runtimes)
@@ -564,12 +417,12 @@ class GapManager:
                     self.reentry_manager.link_day_trade(cid, order_id)
         else:
             self.logger.warning(
-                "[GAP][FAIL] %s %s on %s - order placement failed",
+                "[GAP][FAIL] %s %s on %s - MKT order placement failed",
                 candidate.signal_type,
                 candidate.direction,
                 symbol,
             )
-            # Gap trade failed - drop any orphaned re-entry candidates (both Day and Swing)
+            # Clean up re-entry candidates
             if reentry_candidate_ids and self.reentry_manager is not None:
                 for cid in reentry_candidate_ids:
                     try:
@@ -579,15 +432,9 @@ class GapManager:
                             "[GAP] Failed to drop candidate %s: %s", cid, exc
                         )
 
-            # Block symbol+strategy for rest of week (swing re-entry) and day (day/gap entry)
-            today = now_pt().date()
+            # Block symbol+strategy
             self.state_mgr.blocked.block_for_week(symbol, candidate.strategy_id, today)
             self.state_mgr.blocked.block_for_day(symbol, candidate.strategy_id, today)
-            self.logger.warning(
-                "[GAP][BLOCKED] %s %s - gap trade failed, blocked for week and day",
-                symbol,
-                candidate.strategy_id,
-            )
 
             self._mark_signal_failed(symbol, candidate.strategy_id, runtimes)
 
@@ -597,43 +444,24 @@ class GapManager:
         self,
         candidate: GapCandidate,
         open_price: float,
-        prev_close: float,
-    ) -> Tuple[bool, float]:
+    ) -> bool:
         """
         Check if gap condition is met.
 
-        Gap must fully cross entry level overnight.
-
-        Returns (condition_met, gap_percent).
+        Simple check: does open price meet or exceed entry in the required direction?
         """
         entry = candidate.entry_price
         gap_needed = candidate.gap_direction_needed
 
-        # Validate prev_close to prevent division by zero or invalid values
-        if prev_close is None or prev_close <= 0:
-            self.logger.warning(
-                "[GAP] Invalid prev_close (%.4f) for %s - skipping gap check",
-                prev_close if prev_close is not None else 0,
-                candidate.symbol,
-            )
-            return False, 0.0
-
-        # Calculate gap percentage from prev_close
-        gap_percent = ((open_price - prev_close) / prev_close) * 100.0
-
         if gap_needed == "DOWN":
             # Gap down: open must be AT or BELOW entry
-            # AND prev_close must have been ABOVE entry (crossed overnight)
-            condition = open_price <= entry and prev_close > entry
+            return open_price <= entry
         else:  # UP
             # Gap up: open must be AT or ABOVE entry
-            # AND prev_close must have been BELOW entry (crossed overnight)
-            condition = open_price >= entry and prev_close < entry
-
-        return condition, gap_percent
+            return open_price >= entry
 
     def _get_open_price(self, symbol: str) -> Optional[float]:
-        """Get the open price (first tick) for a symbol."""
+        """Get the open price (current market snapshot) for a symbol."""
         try:
             from ib_insync import Stock
 
@@ -662,7 +490,6 @@ class GapManager:
 
     def _check_day_caps(self, candidate: GapCandidate) -> Tuple[bool, Optional[str]]:
         """Check day trade caps."""
-        # Create a minimal signal-like object for cap check
         class MinimalSignal:
             def __init__(self, symbol, strategy_id, trade_date):
                 self.symbol = symbol
@@ -677,7 +504,7 @@ class GapManager:
         return self.cap_manager.can_open_day(sig)
 
     def _check_swing_caps(self, candidate: GapCandidate) -> Tuple[bool, Optional[str]]:
-        """Check swing trade caps (uses available slots, not reserved)."""
+        """Check swing trade caps."""
         class MinimalSignal:
             def __init__(self, symbol, strategy_id, trade_date):
                 self.symbol = symbol
@@ -702,7 +529,6 @@ class GapManager:
         if self.conflict_resolver is None:
             return True, reentry_candidate_ids
 
-        # Create minimal signal for conflict check
         class MinimalSignal:
             def __init__(self, symbol, direction, trade_type):
                 self.symbol = symbol
@@ -724,12 +550,10 @@ class GapManager:
             for instr in decision.positions_to_flatten:
                 # For day gap trades, store re-entry candidate if flattening swing
                 if is_day and instr.kind == "SWING" and self.reentry_manager is not None:
-                    # Look up the original signal
                     signal_key = f"{instr.symbol}_{instr.strategy_id}"
                     original_signal = self._swing_signals_by_key.get(signal_key)
 
                     if original_signal is not None:
-                        # Create FilledPosition-like object for store_candidate
                         from fill_tracker import FilledPosition
                         flattened_pos = FilledPosition(
                             symbol=instr.symbol,
@@ -748,27 +572,16 @@ class GapManager:
                             reentry_candidate_ids.append(cid)
                             self.logger.info(
                                 "[GAP] Created re-entry candidate %s for flattened SWING %s %s",
-                                cid,
-                                instr.symbol,
-                                instr.strategy_id,
+                                cid, instr.symbol, instr.strategy_id,
                             )
                         except Exception as exc:
                             self.logger.error(
                                 "[GAP] Failed to create re-entry candidate for %s %s: %s",
-                                instr.symbol,
-                                instr.strategy_id,
-                                exc,
+                                instr.symbol, instr.strategy_id, exc,
                             )
-                    else:
-                        self.logger.warning(
-                            "[GAP] Could not find original signal for SWING %s %s - no re-entry candidate created",
-                            instr.symbol,
-                            instr.strategy_id,
-                        )
 
                 success = self.executor.flatten_position_with_retry(instr)
                 if not success:
-                    # Clean up any candidates we created since flatten failed
                     for cid in reentry_candidate_ids:
                         try:
                             self.reentry_manager.drop_candidate(cid, "flatten_failed")
@@ -780,65 +593,20 @@ class GapManager:
 
         return True, reentry_candidate_ids
 
-    def _calculate_gap_stop(
-        self, candidate: GapCandidate, open_price: float
-    ) -> float:
-        """Calculate new stop price based on open price."""
-        if candidate.direction == "LONG":
-            # Stop below entry for LONG
-            return open_price - candidate.stop_distance
-        else:
-            # Stop above entry for SHORT
-            return open_price + candidate.stop_distance
-
-    def _execute_gap_trade(
+    def _place_gap_market_order(
         self,
         candidate: GapCandidate,
-        open_price: float,
-        new_stop: float,
         is_day: bool,
     ) -> Optional[int]:
-        """Execute the gap trade with MKT entry."""
-        from orders import build_day_bracket, build_swing_bracket, link_bracket, make_stock_contract
+        """
+        Place a single-leg MKT order for a gap trade.
 
-        trade_date = now_pt().date()
-
-        # Create a signal-like object with gap parameters
-        class GapSignal:
-            def __init__(self, symbol, strategy_id, entry, stop, shares, direction):
-                self.symbol = symbol
-                self.strategy_id = strategy_id
-                self.entry_price = entry
-                self.stop_price = stop
-                self.shares = shares
-                self.direction = direction
-                self.trade_date = trade_date
-
-        gap_sig = GapSignal(
-            candidate.symbol,
-            candidate.strategy_id,
-            open_price,
-            new_stop,
-            candidate.shares,
-            candidate.direction,
-        )
+        Stop and timed orders will be added after fill via complete_gap_bracket().
+        """
+        from ib_insync import Order
+        from orders import make_stock_contract
 
         try:
-            if is_day:
-                # Build day bracket with MKT entry
-                bracket = build_day_bracket(gap_sig, trade_date)
-                # Override to MKT
-                bracket.parent.orderType = "MKT"
-                if hasattr(bracket.parent, 'lmtPrice'):
-                    delattr(bracket.parent, 'lmtPrice')
-            else:
-                # Build swing bracket with MKT entry
-                bracket = build_swing_bracket(gap_sig, trade_date, market_entry=True)
-
-            # Link OCA
-            tag = f"GAP_{candidate.signal_type}_{candidate.symbol}_{candidate.strategy_id}"
-            link_bracket(bracket, oca_group=tag)
-
             # Get contract
             contract = make_stock_contract(candidate.symbol)
             qualified = self.ib.qualifyContracts(contract)
@@ -846,64 +614,162 @@ class GapManager:
                 self.logger.error("[GAP] Failed to qualify contract for %s", candidate.symbol)
                 return None
 
-            # Assign order IDs
-            parent_id = self.executor._get_next_order_id()
-            stop_id = self.executor._get_next_order_id()
-            timed_id = self.executor._get_next_order_id()
-
-            bracket.parent.orderId = parent_id
-            bracket.stop.orderId = stop_id
-            bracket.stop.parentId = parent_id
-            bracket.timed.orderId = timed_id
-            bracket.timed.parentId = parent_id
-
-            # Transmit
-            bracket.parent.transmit = False
-            bracket.stop.transmit = False
-            bracket.timed.transmit = True
-
-            # Place orders
-            self.ib.placeOrder(contract, bracket.parent)
-            self.ib.placeOrder(contract, bracket.stop)
-            self.ib.placeOrder(contract, bracket.timed)
-
-            self.logger.info(
-                "[GAP] Bracket placed: %s parent=%d stop=%d timed=%d",
-                candidate.symbol,
-                parent_id,
-                stop_id,
-                timed_id,
+            # Create MKT order
+            action = "BUY" if candidate.direction == "LONG" else "SELL"
+            order = Order(
+                action=action,
+                orderType="MKT",
+                totalQuantity=candidate.shares,
+                tif="DAY",
+                transmit=True,
             )
 
-            # Register with fill tracker
-            if self.fill_tracker is not None:
-                self.fill_tracker.register_pending_order(
-                    order_id=parent_id,
-                    strategy_id=candidate.strategy_id,
-                    symbol=candidate.symbol,
-                    trade_type=candidate.signal_type,
-                    trade_date=trade_date,
-                    side=candidate.direction,
-                    qty=candidate.shares,
-                    stop_order_id=stop_id,
-                    timed_order_id=timed_id,
-                )
+            # Get order ID
+            order_id = self.executor._get_next_order_id()
+            order.orderId = order_id
 
-            # Register with cap manager
+            # Place order
+            self.ib.placeOrder(contract, order)
+
+            self.logger.info(
+                "[GAP] MKT order placed: %s %s %d shares (order_id=%d)",
+                action, candidate.symbol, candidate.shares, order_id,
+            )
+
+            # Store in pending gap orders for completion after fill
+            self.state_mgr.pending_gap_orders.add_pending(
+                order_id=order_id,
+                symbol=candidate.symbol,
+                strategy_id=candidate.strategy_id,
+                signal_type=candidate.signal_type,
+                direction=candidate.direction,
+                stop_distance=candidate.stop_distance,
+                shares=candidate.shares,
+            )
+
+            # Register with cap manager (optimistic - on placement)
+            trade_date = now_pt().date()
+
+            class GapSignal:
+                def __init__(self, symbol, strategy_id, trade_date):
+                    self.symbol = symbol
+                    self.strategy_id = strategy_id
+                    self.trade_date = trade_date
+
+            gap_sig = GapSignal(candidate.symbol, candidate.strategy_id, trade_date)
+
             if is_day:
                 self.cap_manager.register_day_entry(gap_sig)
             else:
                 self.cap_manager.register_swing_entry(gap_sig)
 
-            return parent_id
+            return order_id
 
         except Exception as exc:
             self.logger.error(
-                "[GAP] Error executing gap trade for %s: %s",
-                candidate.symbol,
-                exc,
+                "[GAP] Error placing MKT order for %s: %s",
+                candidate.symbol, exc,
             )
             return None
+
+    def _place_stop_and_timed(
+        self,
+        symbol: str,
+        strategy_id: str,
+        signal_type: str,
+        direction: str,
+        shares: int,
+        stop_price: float,
+        parent_order_id: int,
+    ) -> bool:
+        """
+        Place stop and timed exit orders to complete a gap bracket.
+
+        Called after the MKT order fills.
+        """
+        from ib_insync import Order
+        from orders import make_stock_contract
+        from time_utils import get_day_exit_time_pt
+
+        try:
+            contract = make_stock_contract(symbol)
+            qualified = self.ib.qualifyContracts(contract)
+            if not qualified:
+                self.logger.error("[GAP] Failed to qualify contract for %s", symbol)
+                return False
+
+            # Determine exit action (opposite of entry)
+            exit_action = "SELL" if direction == "LONG" else "BUY"
+
+            # Create stop order
+            stop_order = Order(
+                action=exit_action,
+                orderType="STP",
+                totalQuantity=shares,
+                auxPrice=stop_price,
+                tif="GTC",
+                transmit=False,
+            )
+
+            # Create timed exit order
+            trade_date = now_pt().date()
+            exit_time = get_day_exit_time_pt()
+
+            # Format GAT time for IBKR (YYYYMMDD HH:MM:SS timezone)
+            gat_str = f"{trade_date.strftime('%Y%m%d')} {exit_time.strftime('%H:%M:%S')} US/Pacific"
+
+            timed_order = Order(
+                action=exit_action,
+                orderType="MKT",
+                totalQuantity=shares,
+                tif="DAY",
+                goodAfterTime=gat_str,
+                transmit=True,  # Transmit all
+            )
+
+            # Get order IDs
+            stop_id = self.executor._get_next_order_id()
+            timed_id = self.executor._get_next_order_id()
+
+            stop_order.orderId = stop_id
+            timed_order.orderId = timed_id
+
+            # Link OCA so stop and timed cancel each other
+            oca_group = f"GAP_{signal_type}_{symbol}_{strategy_id}_{parent_order_id}"
+            stop_order.ocaGroup = oca_group
+            stop_order.ocaType = 1  # Cancel remaining
+            timed_order.ocaGroup = oca_group
+            timed_order.ocaType = 1
+
+            # Place orders
+            self.ib.placeOrder(contract, stop_order)
+            self.ib.placeOrder(contract, timed_order)
+
+            self.logger.info(
+                "[GAP] Stop/timed orders placed for %s: stop_id=%d (%.2f), timed_id=%d",
+                symbol, stop_id, stop_price, timed_id,
+            )
+
+            # Register with fill tracker
+            if self.fill_tracker is not None:
+                self.fill_tracker.register_gap_bracket_completion(
+                    parent_order_id=parent_order_id,
+                    stop_order_id=stop_id,
+                    timed_order_id=timed_id,
+                    symbol=symbol,
+                    strategy_id=strategy_id,
+                    signal_type=signal_type,
+                    direction=direction,
+                    shares=shares,
+                )
+
+            return True
+
+        except Exception as exc:
+            self.logger.error(
+                "[GAP] Error placing stop/timed for %s: %s", symbol, exc
+            )
+            return False
 
     def _mark_signal_triggered(
         self, symbol: str, strategy_id: str, runtimes: Dict[str, List]
@@ -921,69 +787,15 @@ class GapManager:
         self, symbol: str, strategy_id: str, runtimes: Dict[str, List]
     ) -> None:
         """Mark a signal as failed/skipped."""
-        # For failed gap trades, mark as triggered so normal logic doesn't retry
         self._mark_signal_triggered(symbol, strategy_id, runtimes)
-
-    # === Persistence ===
-
-    def _load_prev_closes(self) -> None:
-        """Load prev_close data from state.json."""
-        if not STATE_PATH.exists():
-            return
-
-        try:
-            with STATE_PATH.open("r", encoding="utf-8") as f:
-                data = json.load(f)
-
-            gap_data = data.get("gap_data", {})
-            prev_closes = gap_data.get("prev_closes", {})
-
-            for symbol, pdata in prev_closes.items():
-                self.prev_closes[symbol] = PrevCloseData(**pdata)
-
-            self.logger.info(
-                "[GAP] Loaded %d prev_close entries from state.",
-                len(self.prev_closes),
-            )
-        except Exception as exc:
-            self.logger.warning(
-                "[GAP] Failed to load prev_close data: %s", exc
-            )
-
-    def _save_prev_closes(self) -> None:
-        """Save prev_close data to state.json."""
-        STATE_PATH.parent.mkdir(exist_ok=True)
-
-        try:
-            # Load existing state
-            if STATE_PATH.exists():
-                with STATE_PATH.open("r", encoding="utf-8") as f:
-                    data = json.load(f)
-            else:
-                data = {}
-
-            # Update gap_data section
-            gap_data = data.get("gap_data", {})
-            gap_data["prev_closes"] = {
-                symbol: asdict(pdata)
-                for symbol, pdata in self.prev_closes.items()
-            }
-            data["gap_data"] = gap_data
-
-            with STATE_PATH.open("w", encoding="utf-8") as f:
-                json.dump(data, f, indent=2, sort_keys=True)
-
-        except Exception as exc:
-            self.logger.warning(
-                "[GAP] Failed to save prev_close data: %s", exc
-            )
 
     # === Debug/Status ===
 
     def get_status(self) -> Dict[str, Any]:
         """Return current gap manager status."""
+        pending = self.state_mgr.pending_gap_orders.get_all_pending()
         return {
-            "prev_closes_count": len(self.prev_closes),
             "gap_check_date": self._gap_check_date.isoformat() if self._gap_check_date else None,
-            "symbols_tracked": list(self.prev_closes.keys()),
+            "pending_gap_orders": len(pending),
+            "pending_symbols": [p["symbol"] for p in pending],
         }

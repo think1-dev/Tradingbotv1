@@ -304,11 +304,27 @@ def main() -> None:
         )
         logger.info("[STATUS] GapManager initialized for gap-at-open trade detection.")
 
-        # Check for stale prev_close data and fetch historical if needed
-        all_symbols = list(set(
-            [s.symbol for s in day_signals] + [s.symbol for s in swing_signals]
-        ))
-        gap_manager.check_and_fetch_stale_prev_closes(all_symbols)
+        # Wire up gap fill callback for bracket completion after MKT fill
+        fill_tracker.set_gap_fill_callback(gap_manager.complete_gap_bracket)
+
+        # Check for pending gap orders from previous session (require manual intervention)
+        pending_gap_orders = state_mgr.pending_gap_orders.get_all_pending()
+        if pending_gap_orders:
+            logger.critical(
+                "[STARTUP] CRITICAL: Found %d pending gap orders from previous session. "
+                "These positions may be UNPROTECTED (no stop/timed orders). "
+                "Manual intervention required. Pending orders: %s",
+                len(pending_gap_orders),
+                [p["symbol"] for p in pending_gap_orders],
+            )
+            # Clean up stale pending orders (older than 24 hours)
+            stale = state_mgr.pending_gap_orders.cleanup_stale(max_age_hours=24)
+            if stale:
+                logger.warning(
+                    "[STARTUP] Cleaned up %d stale pending gap orders: %s",
+                    len(stale),
+                    [s["symbol"] for s in stale],
+                )
 
         # Check for pending re-entry candidates at startup (market open re-check)
         if is_rth(now_pt()):

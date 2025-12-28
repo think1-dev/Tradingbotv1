@@ -337,6 +337,147 @@ class PendingFlattens:
         return False
 
 
+class PendingGapOrders:
+    """
+    Tracks gap MKT orders awaiting complete fill to finish bracket.
+
+    After a gap condition triggers, a single-leg MKT order is placed.
+    Once filled, stop and timed exit orders are added to complete the bracket.
+
+    Stored in state.json under "pending_gap_orders":
+    {
+        "orders": [
+            {
+                "order_id": 123,
+                "symbol": "AAPL",
+                "strategy_id": "DayLong1",
+                "signal_type": "DAY",
+                "direction": "LONG",
+                "stop_distance": 1.25,
+                "shares": 100,
+                "created_at": "2025-01-08T06:30:00"
+            }
+        ]
+    }
+    """
+
+    def __init__(self, state: Dict[str, Any], save_callback, logger: logging.Logger):
+        self.state = state
+        self._save = save_callback
+        self.logger = logger
+
+    def _get_bucket(self) -> Dict[str, Any]:
+        """Get or create the pending_gap_orders section."""
+        if "pending_gap_orders" not in self.state:
+            self.state["pending_gap_orders"] = {"orders": []}
+        bucket = self.state["pending_gap_orders"]
+        if "orders" not in bucket:
+            bucket["orders"] = []
+        return bucket
+
+    def add_pending(
+        self,
+        order_id: int,
+        symbol: str,
+        strategy_id: str,
+        signal_type: str,
+        direction: str,
+        stop_distance: float,
+        shares: int,
+    ) -> None:
+        """Add a pending gap order awaiting fill."""
+        from time_utils import now_pt
+
+        bucket = self._get_bucket()
+
+        # Check for duplicates
+        for order in bucket["orders"]:
+            if order["order_id"] == order_id:
+                self.logger.warning(
+                    "[PENDING_GAP] Order %d already pending, skipping add", order_id
+                )
+                return
+
+        bucket["orders"].append({
+            "order_id": order_id,
+            "symbol": symbol.upper(),
+            "strategy_id": strategy_id,
+            "signal_type": signal_type.upper(),
+            "direction": direction.upper(),
+            "stop_distance": stop_distance,
+            "shares": shares,
+            "created_at": now_pt().isoformat(),
+        })
+        self._save()
+        self.logger.warning(
+            "[PENDING_GAP] Added pending gap order %d for %s %s (UNPROTECTED until fill)",
+            order_id, symbol, strategy_id,
+        )
+
+    def remove_pending(self, order_id: int) -> Optional[Dict[str, Any]]:
+        """Remove and return a pending gap order. Returns None if not found."""
+        bucket = self._get_bucket()
+        for i, order in enumerate(bucket["orders"]):
+            if order["order_id"] == order_id:
+                removed = bucket["orders"].pop(i)
+                self._save()
+                self.logger.info(
+                    "[PENDING_GAP] Removed pending gap order %d for %s",
+                    order_id, removed["symbol"],
+                )
+                return removed
+        return None
+
+    def get_pending(self, order_id: int) -> Optional[Dict[str, Any]]:
+        """Get a pending gap order by order_id without removing it."""
+        bucket = self._get_bucket()
+        for order in bucket["orders"]:
+            if order["order_id"] == order_id:
+                return order
+        return None
+
+    def get_all_pending(self) -> List[Dict[str, Any]]:
+        """Get all pending gap orders."""
+        bucket = self._get_bucket()
+        return list(bucket["orders"])
+
+    def is_pending_gap_order(self, order_id: int) -> bool:
+        """Check if an order_id is a pending gap order."""
+        return self.get_pending(order_id) is not None
+
+    def cleanup_stale(self, max_age_hours: int = 24) -> List[Dict[str, Any]]:
+        """Remove pending orders older than max_age_hours. Returns removed orders."""
+        from time_utils import now_pt
+        from datetime import datetime
+
+        bucket = self._get_bucket()
+        now = now_pt()
+        stale = []
+        remaining = []
+
+        for order in bucket["orders"]:
+            try:
+                created = datetime.fromisoformat(order["created_at"])
+                age_hours = (now - created).total_seconds() / 3600
+                if age_hours > max_age_hours:
+                    stale.append(order)
+                else:
+                    remaining.append(order)
+            except (ValueError, KeyError):
+                stale.append(order)
+
+        if stale:
+            bucket["orders"] = remaining
+            self._save()
+            for order in stale:
+                self.logger.warning(
+                    "[PENDING_GAP] Cleaned up stale pending order %d for %s (age exceeded)",
+                    order.get("order_id", 0), order.get("symbol", "?"),
+                )
+
+        return stale
+
+
 class SignalCache:
     """
     Caches loaded signals with pre-calculated stop distances.
@@ -621,6 +762,8 @@ class StateManager:
         self.blocked = BlockedEntries(self.state, self._save, self.logger)
         # Initialize pending flattens tracker
         self.pending_flattens = PendingFlattens(self.state, self._save, self.logger)
+        # Initialize pending gap orders tracker
+        self.pending_gap_orders = PendingGapOrders(self.state, self._save, self.logger)
         # Initialize signal cache for pre-calculated stop distances
         self.signal_cache = SignalCache(self.state, self._save, self.logger)
 
@@ -636,6 +779,7 @@ class StateManager:
                     self.state["swing"] = data.get("swing", {}) or {}
                     self.state["blocked_entries"] = data.get("blocked_entries", {"week": {}, "day": {}})
                     self.state["pending_flattens"] = data.get("pending_flattens", {"positions": []})
+                    self.state["pending_gap_orders"] = data.get("pending_gap_orders", {"orders": []})
                     self.state["signal_cache"] = data.get("signal_cache", {"day": {}, "swing": {}})
                 else:
                     raise ValueError("state.json root is not a dict")
@@ -646,10 +790,10 @@ class StateManager:
                     self.path,
                     exc,
                 )
-                self.state = {"day": {}, "swing": {}, "blocked_entries": {"week": {}, "day": {}}, "pending_flattens": {"positions": []}, "signal_cache": {"day": {}, "swing": {}}}
+                self.state = {"day": {}, "swing": {}, "blocked_entries": {"week": {}, "day": {}}, "pending_flattens": {"positions": []}, "pending_gap_orders": {"orders": []}, "signal_cache": {"day": {}, "swing": {}}}
         else:
             self.logger.info("[SYNC] No existing state file; starting fresh.")
-            self.state = {"day": {}, "swing": {}, "blocked_entries": {"week": {}, "day": {}}, "pending_flattens": {"positions": []}, "signal_cache": {"day": {}, "swing": {}}}
+            self.state = {"day": {}, "swing": {}, "blocked_entries": {"week": {}, "day": {}}, "pending_flattens": {"positions": []}, "pending_gap_orders": {"orders": []}, "signal_cache": {"day": {}, "swing": {}}}
 
     def _ensure_file_exists(self) -> None:
         """
