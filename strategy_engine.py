@@ -481,8 +481,22 @@ class StrategyEngine:
             if bid is None or bid < lmt:
                 return
 
-            # Check if symbol+strategy is blocked (bracket/gap failure)
             today = now_pt().date()
+
+            # Check if signal already filled (optimistic lock check)
+            if self.state_mgr.signal_cache.is_signal_filled(
+                today, sig.symbol, sig.strategy_id, "DAY"
+            ):
+                self.logger.info(
+                    "[TRIG][DAY][SHORT][SKIP] %s strategy=%s - already filled today",
+                    sig.symbol,
+                    sig.strategy_id,
+                )
+                rt.triggered = True
+                rt.triggered_date = today
+                return
+
+            # Check if symbol+strategy is blocked (bracket/gap failure)
             is_blocked, block_reason = self.state_mgr.blocked.is_blocked(
                 sig.symbol, sig.strategy_id, today
             )
@@ -544,6 +558,12 @@ class StrategyEngine:
                 bid,
                 lmt,
             )
+
+            # Mark signal as filled BEFORE placing order (optimistic lock)
+            self.state_mgr.signal_cache.mark_signal_filled(
+                today, sig.symbol, sig.strategy_id, "DAY", filled=True
+            )
+
             day_order_id = self.executor.place_day_bracket(sig)
 
             if day_order_id is not None and self.reentry_manager is not None:
@@ -557,8 +577,10 @@ class StrategyEngine:
                     sig.symbol, day_order_id, sig.direction
                 )
             elif day_order_id is None:
-                # Day bracket placement failed
-                today = now_pt().date()
+                # Day bracket placement failed - unmark signal
+                self.state_mgr.signal_cache.mark_signal_filled(
+                    today, sig.symbol, sig.strategy_id, "DAY", filled=False
+                )
 
                 # Drop orphaned re-entry candidates
                 if reentry_candidate_ids and self.reentry_manager is not None:
@@ -581,14 +603,28 @@ class StrategyEngine:
                 )
 
             rt.triggered = True
-            rt.triggered_date = now_pt().date()
+            rt.triggered_date = today
 
         else:
             if ask is None or ask > lmt:
                 return
 
-            # Check if symbol+strategy is blocked (bracket/gap failure)
             today = now_pt().date()
+
+            # Check if signal already filled (optimistic lock check)
+            if self.state_mgr.signal_cache.is_signal_filled(
+                today, sig.symbol, sig.strategy_id, "DAY"
+            ):
+                self.logger.info(
+                    "[TRIG][DAY][LONG][SKIP] %s strategy=%s - already filled today",
+                    sig.symbol,
+                    sig.strategy_id,
+                )
+                rt.triggered = True
+                rt.triggered_date = today
+                return
+
+            # Check if symbol+strategy is blocked (bracket/gap failure)
             is_blocked, block_reason = self.state_mgr.blocked.is_blocked(
                 sig.symbol, sig.strategy_id, today
             )
@@ -650,6 +686,12 @@ class StrategyEngine:
                 ask,
                 lmt,
             )
+
+            # Mark signal as filled BEFORE placing order (optimistic lock)
+            self.state_mgr.signal_cache.mark_signal_filled(
+                today, sig.symbol, sig.strategy_id, "DAY", filled=True
+            )
+
             day_order_id = self.executor.place_day_bracket(sig)
 
             if day_order_id is not None and self.reentry_manager is not None:
@@ -663,8 +705,10 @@ class StrategyEngine:
                     sig.symbol, day_order_id, sig.direction
                 )
             elif day_order_id is None:
-                # Day bracket placement failed
-                today = now_pt().date()
+                # Day bracket placement failed - unmark signal
+                self.state_mgr.signal_cache.mark_signal_filled(
+                    today, sig.symbol, sig.strategy_id, "DAY", filled=False
+                )
 
                 # Drop orphaned re-entry candidates
                 if reentry_candidate_ids and self.reentry_manager is not None:
@@ -687,7 +731,7 @@ class StrategyEngine:
                 )
 
             rt.triggered = True
-            rt.triggered_date = now_pt().date()
+            rt.triggered_date = today
 
     # ---------- Swing evaluation ---------- #
 
@@ -732,6 +776,20 @@ class StrategyEngine:
                 )
                 trade_date = now_pt().date()
         setattr(sig, "trade_date", trade_date)
+
+        # Check if signal already filled (optimistic lock check)
+        if self.state_mgr.signal_cache.is_signal_filled(
+            trade_date, sig.symbol, sig.strategy_id, "SWING"
+        ):
+            self.logger.info(
+                "[TRIG][SWING][%s][SKIP] %s strategy=%s - already filled this week",
+                label,
+                sig.symbol,
+                sig.strategy_id,
+            )
+            rt.triggered = True
+            rt.triggered_date = trade_date
+            return
 
         # Check if symbol+strategy is blocked for the week (bracket/gap failure)
         # Swing entries only check week-level blocks, not day-level
@@ -807,9 +865,19 @@ class StrategyEngine:
             entry,
             side_desc,
         )
+
+        # Mark signal as filled BEFORE placing order (optimistic lock)
+        self.state_mgr.signal_cache.mark_signal_filled(
+            trade_date, sig.symbol, sig.strategy_id, "SWING", filled=True
+        )
+
         success = self.executor.place_swing_bracket(sig)
         if not success:
-            # Swing bracket placement failed - block for rest of week
+            # Swing bracket placement failed - unmark signal
+            self.state_mgr.signal_cache.mark_signal_filled(
+                trade_date, sig.symbol, sig.strategy_id, "SWING", filled=False
+            )
+            # Block for rest of week
             self.state_mgr.blocked.block_for_week(sig.symbol, sig.strategy_id, trade_date)
             self.logger.warning(
                 "[TRIG][SWING][%s][FAILED] %s %s - bracket placement failed, blocked for week",
@@ -818,4 +886,4 @@ class StrategyEngine:
                 sig.strategy_id,
             )
         rt.triggered = True
-        rt.triggered_date = now_pt().date()
+        rt.triggered_date = trade_date

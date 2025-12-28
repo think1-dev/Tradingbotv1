@@ -728,6 +728,119 @@ class SignalCache:
                 len(expired_day), len(expired_swing),
             )
 
+    # === Signal Fill Tracking ===
+
+    def is_signal_filled(
+        self, d: date, symbol: str, strategy_id: str, signal_type: str
+    ) -> bool:
+        """
+        Check if a signal has been filled (order placed).
+
+        A filled signal should not be traded again until the CSV is replaced.
+
+        Args:
+            d: Trade date (day signals) or any date in the week (swing signals)
+            symbol: Stock symbol
+            strategy_id: Strategy identifier
+            signal_type: "DAY" or "SWING"
+
+        Returns:
+            True if signal was already filled, False otherwise
+        """
+        cache = self._get_cache_bucket()
+
+        if signal_type.upper() == "DAY":
+            key = d.isoformat()
+            entry = cache["day"].get(key)
+        else:
+            monday = monday_of_week(d)
+            key = monday.isoformat()
+            entry = cache["swing"].get(key)
+
+        if entry is None:
+            return False
+
+        for sig in entry.get("signals", []):
+            if sig.get("symbol") == symbol.upper() and sig.get("strategy_id") == strategy_id:
+                return sig.get("filled", False)
+
+        return False
+
+    def mark_signal_filled(
+        self,
+        d: date,
+        symbol: str,
+        strategy_id: str,
+        signal_type: str,
+        filled: bool = True,
+    ) -> bool:
+        """
+        Mark a signal as filled (order placed) or unfilled (placement failed).
+
+        Used for optimistic locking - mark BEFORE placing order, unmark if fails.
+
+        Args:
+            d: Trade date (day signals) or any date in the week (swing signals)
+            symbol: Stock symbol
+            strategy_id: Strategy identifier
+            signal_type: "DAY" or "SWING"
+            filled: True to mark as filled, False to unmark
+
+        Returns:
+            True if signal was found and updated, False if not found
+        """
+        cache = self._get_cache_bucket()
+        symbol = symbol.upper()
+
+        if signal_type.upper() == "DAY":
+            key = d.isoformat()
+            entry = cache["day"].get(key)
+        else:
+            monday = monday_of_week(d)
+            key = monday.isoformat()
+            entry = cache["swing"].get(key)
+
+        if entry is None:
+            self.logger.warning(
+                "[CACHE] Cannot mark signal - no cache entry for %s %s on %s",
+                signal_type, symbol, key,
+            )
+            return False
+
+        for sig in entry.get("signals", []):
+            if sig.get("symbol") == symbol and sig.get("strategy_id") == strategy_id:
+                sig["filled"] = filled
+                self._save()
+                self.logger.info(
+                    "[CACHE] Marked %s %s %s as %s",
+                    signal_type, symbol, strategy_id,
+                    "FILLED" if filled else "UNFILLED",
+                )
+                return True
+
+        self.logger.warning(
+            "[CACHE] Cannot mark signal - not found: %s %s %s on %s",
+            signal_type, symbol, strategy_id, key,
+        )
+        return False
+
+    def get_unfilled_signals_count(self, d: date, signal_type: str) -> int:
+        """Get count of signals that haven't been filled yet."""
+        cache = self._get_cache_bucket()
+
+        if signal_type.upper() == "DAY":
+            key = d.isoformat()
+            entry = cache["day"].get(key)
+        else:
+            monday = monday_of_week(d)
+            key = monday.isoformat()
+            entry = cache["swing"].get(key)
+
+        if entry is None:
+            return 0
+
+        return sum(1 for sig in entry.get("signals", []) if not sig.get("filled", False))
+
 
 class StateManager:
     """

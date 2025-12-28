@@ -321,6 +321,20 @@ class GapManager:
         Returns order ID if gap MKT order was placed, None otherwise.
         """
         symbol = candidate.symbol
+        today = now_pt().date()
+        signal_type = "DAY" if is_day else "SWING"
+
+        # Check if signal already filled (optimistic lock check)
+        if self.state_mgr.signal_cache.is_signal_filled(
+            today, symbol, candidate.strategy_id, signal_type
+        ):
+            self.logger.info(
+                "[GAP][SKIP] %s %s on %s - already filled this %s",
+                signal_type, candidate.direction, symbol,
+                "day" if is_day else "week",
+            )
+            self._mark_signal_triggered(symbol, candidate.strategy_id, runtimes)
+            return None
 
         # Get open price
         open_price = self._get_open_price(symbol)
@@ -347,7 +361,6 @@ class GapManager:
             return None
 
         # Gap condition met - check if symbol+strategy is blocked
-        today = now_pt().date()
         if is_day:
             is_blocked, block_reason = self.state_mgr.blocked.is_blocked(
                 symbol, candidate.strategy_id, today
@@ -397,6 +410,11 @@ class GapManager:
             self._mark_signal_failed(symbol, candidate.strategy_id, runtimes)
             return None
 
+        # Mark signal as filled BEFORE placing order (optimistic lock)
+        self.state_mgr.signal_cache.mark_signal_filled(
+            today, symbol, candidate.strategy_id, signal_type, filled=True
+        )
+
         # Place single-leg MKT order (stop/timed added after fill)
         order_id = self._place_gap_market_order(candidate, is_day)
 
@@ -422,6 +440,11 @@ class GapManager:
                 candidate.direction,
                 symbol,
             )
+            # Unmark signal (placement failed, allow retry or other entry path)
+            self.state_mgr.signal_cache.mark_signal_filled(
+                today, symbol, candidate.strategy_id, signal_type, filled=False
+            )
+
             # Clean up re-entry candidates
             if reentry_candidate_ids and self.reentry_manager is not None:
                 for cid in reentry_candidate_ids:
