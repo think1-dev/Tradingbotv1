@@ -389,37 +389,22 @@ class GapManager:
 
         for sig in signals:
             direction = (getattr(sig, "direction", None) or "LONG").upper()
-            entry = float(sig.entry_price)
-            stop = float(sig.stop_price)
-
-            # Use pre-calculated stop_distance from signal (persisted from CSV load)
-            stop_distance = getattr(sig, "stop_distance", 0.0)
-            if stop_distance <= 0:
-                # Fallback: calculate if not pre-calculated (legacy signals)
-                stop_distance = abs(entry - stop)
-                self.logger.debug(
-                    "[GAP] Fallback stop_distance calculation for %s: %.2f",
-                    sig.symbol, stop_distance,
-                )
 
             # Determine gap direction needed
             # Day LONG: needs gap DOWN (open < entry)
             # Day SHORT: needs gap UP (open > entry)
-            if direction == "LONG":
-                gap_direction = "DOWN"
-            else:
-                gap_direction = "UP"
+            gap_direction = "DOWN" if direction == "LONG" else "UP"
 
             candidates.append(GapCandidate(
                 symbol=sig.symbol.upper(),
                 strategy_id=sig.strategy_id,
                 signal_type="DAY",
                 direction=direction,
-                entry_price=entry,
-                original_stop=stop,
+                entry_price=float(sig.entry_price),
+                original_stop=float(sig.stop_price),
                 shares=sig.shares,
                 gap_direction_needed=gap_direction,
-                stop_distance=stop_distance if stop_distance > 0 else DEFAULT_DAY_STOP_DISTANCE,
+                stop_distance=sig.stop_distance,  # Pre-calculated from CSV load
             ))
 
         return candidates
@@ -431,38 +416,23 @@ class GapManager:
         candidates = []
 
         for sig in signals:
-            entry = float(sig.entry_price)
-            stop = float(sig.stop_price)
             strategy_lower = (sig.strategy_id or "").lower()
-
-            # Use pre-calculated stop_distance from signal (persisted from CSV load)
-            stop_distance = getattr(sig, "stop_distance", 0.0)
-            if stop_distance <= 0:
-                # Fallback: calculate if not pre-calculated (legacy signals)
-                stop_distance = abs(entry - stop)
-                self.logger.debug(
-                    "[GAP] Fallback stop_distance calculation for %s: %.2f",
-                    sig.symbol, stop_distance,
-                )
 
             # Determine gap direction based on strategy type
             # Swing MOMO/Breakout: needs gap UP (open > entry)
             # Swing Pullback/MeanRev: needs gap DOWN (open < entry)
-            if "momo" in strategy_lower or "breakout" in strategy_lower:
-                gap_direction = "UP"
-            else:
-                gap_direction = "DOWN"
+            gap_direction = "UP" if ("momo" in strategy_lower or "breakout" in strategy_lower) else "DOWN"
 
             candidates.append(GapCandidate(
                 symbol=sig.symbol.upper(),
                 strategy_id=sig.strategy_id,
                 signal_type="SWING",
                 direction="LONG",  # Swings are LONG-only
-                entry_price=entry,
-                original_stop=stop,
+                entry_price=float(sig.entry_price),
+                original_stop=float(sig.stop_price),
                 shares=sig.shares,
                 gap_direction_needed=gap_direction,
-                stop_distance=stop_distance if stop_distance > 0 else DEFAULT_SWING_STOP_DISTANCE,
+                stop_distance=sig.stop_distance,  # Pre-calculated from CSV load
             ))
 
         return candidates
