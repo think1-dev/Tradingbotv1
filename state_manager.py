@@ -879,6 +879,34 @@ class StateManager:
         self.pending_gap_orders = PendingGapOrders(self.state, self._save, self.logger)
         # Initialize signal cache for pre-calculated stop distances
         self.signal_cache = SignalCache(self.state, self._save, self.logger)
+        # Run startup cleanup
+        self._startup_cleanup()
+
+    def _startup_cleanup(self) -> None:
+        """
+        Clean up stale data on startup.
+
+        - Pending gap orders older than 9 days (orphaned from crashes)
+        - Expired blocked entries (from previous weeks/days)
+        - Old signal cache entries (older than 7 days)
+        """
+        from time_utils import now_pt
+
+        today = now_pt().date()
+
+        # Clean up stale pending gap orders (9 days = 216 hours)
+        stale_gap_orders = self.pending_gap_orders.cleanup_stale(max_age_hours=216)
+        if stale_gap_orders:
+            self.logger.warning(
+                "[STARTUP] Cleaned up %d stale pending gap orders (>9 days old)",
+                len(stale_gap_orders),
+            )
+
+        # Clean up expired blocked entries
+        self.blocked.cleanup_expired(today)
+
+        # Clean up old signal cache entries
+        self.signal_cache.cleanup_old_cache(today, keep_days=7)
 
     # --- internal load/save ---
 
