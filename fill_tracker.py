@@ -546,6 +546,15 @@ class FillTracker:
                         "[FILL_TRACKER] Error decrementing cap counter for cancelled order: %s", exc
                     )
 
+        # Remove from pending_gap_orders if this was a gap order
+        if self.state_mgr is not None:
+            removed = self.state_mgr.pending_gap_orders.remove_pending(pending.order_id)
+            if removed:
+                self.logger.info(
+                    "[FILL_TRACKER] Removed cancelled gap order %d from pending_gap_orders",
+                    pending.order_id,
+                )
+
         # Notify ReentryManager for any cancelled DAY order (filled or unfilled)
         # This handles:
         # 1. Filled position cancelled (halt) -> schedules EOD evaluation
