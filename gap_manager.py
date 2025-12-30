@@ -686,6 +686,20 @@ class GapManager:
             else:
                 self.cap_manager.register_swing_entry(gap_sig)
 
+            # Register with FillTracker for cancel tracking (stop/timed added after fill)
+            if self.fill_tracker is not None:
+                self.fill_tracker.register_pending_order(
+                    order_id=order_id,
+                    strategy_id=candidate.strategy_id,
+                    symbol=candidate.symbol,
+                    trade_type=candidate.signal_type,
+                    trade_date=trade_date,
+                    side=candidate.direction,
+                    qty=candidate.shares,
+                    stop_order_id=None,  # Added after fill via complete_gap_bracket
+                    timed_order_id=None,
+                )
+
             return order_id
 
         except Exception as exc:
