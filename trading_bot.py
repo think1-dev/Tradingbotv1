@@ -66,6 +66,7 @@ from fill_tracker import FillTracker
 from conflict_resolver import ConflictResolver
 from reentry_manager import ReentryManager
 from gap_manager import GapManager
+from rollover_manager import RolloverManager
 
 
 # === IB CONNECTION CONFIG ===
@@ -351,6 +352,21 @@ def main() -> None:
         )
         engine.start()
 
+        # === RolloverManager for 24/7 operation ===
+        rollover_manager = RolloverManager(
+            ib=ib,
+            logger=logger,
+            state_mgr=state_mgr,
+            fill_tracker=fill_tracker,
+            loader=loader,
+            basket_dir=BASKET_DIR,
+        )
+        # Wire up callbacks to update StrategyEngine signals
+        rollover_manager.set_day_signals_callback(engine.update_day_signals)
+        rollover_manager.set_swing_signals_callback(engine.update_swing_signals)
+        rollover_manager.start()
+        logger.info("[STATUS] RolloverManager started for 24/7 daily/weekly rollover at 6 AM PST.")
+
         # Run market open gap check if starting during RTH
         if is_rth(now_pt()):
             engine.run_market_open_gap_check()
@@ -368,6 +384,11 @@ def main() -> None:
     except Exception as exc:
         logger.exception("[WARN] Unhandled exception in main(): %s", exc)
     finally:
+        # Stop rollover manager if it was started
+        try:
+            rollover_manager.stop()
+        except NameError:
+            pass  # rollover_manager wasn't created yet
         if ib.isConnected():
             ib.disconnect()
             logger.info("[SYNC] Disconnected from IBKR.")

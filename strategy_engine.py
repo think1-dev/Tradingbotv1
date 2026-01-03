@@ -192,6 +192,124 @@ class StrategyEngine:
             self.enable_swing_trading,
         )
 
+    # ---------- signal updates (for rollover) ---------- #
+
+    def update_day_signals(self, new_signals: List[DaySignal]) -> None:
+        """
+        Update day signals after rollover.
+
+        Clears old day signals and loads new ones. For new symbols that weren't
+        previously subscribed, subscribes to market data.
+        """
+        old_symbols = set(self.day_by_symbol.keys())
+
+        # Clear old day signals
+        self._day_signals = new_signals
+        self.day_by_symbol.clear()
+
+        # Load new signals
+        for sig in new_signals:
+            self.day_by_symbol.setdefault(sig.symbol, []).append(DayRuntime(sig))
+
+        new_symbols = set(self.day_by_symbol.keys())
+
+        # Subscribe to new symbols that weren't already subscribed
+        symbols_to_subscribe = new_symbols - set(self.contracts.keys())
+        if symbols_to_subscribe:
+            self._subscribe_new_symbols(symbols_to_subscribe)
+
+        # Attach contracts to new signals
+        for sym, contract in self.contracts.items():
+            for rt in self.day_by_symbol.get(sym, []):
+                setattr(rt.signal, "contract", contract)
+
+        self.logger.info(
+            "[ENGINE] Updated day signals: %d signals, %d symbols (was %d symbols)",
+            len(new_signals), len(new_symbols), len(old_symbols),
+        )
+
+    def update_swing_signals(self, new_signals: List[SwingSignal]) -> None:
+        """
+        Update swing signals after rollover.
+
+        Clears old swing signals and loads new ones. For new symbols that weren't
+        previously subscribed, subscribes to market data. Also updates the
+        swing_signals_by_key lookup used by GapManager.
+        """
+        old_symbols = set(self.swing_by_symbol.keys())
+
+        # Clear old swing signals
+        self._swing_signals = new_signals
+        self.swing_by_symbol.clear()
+        self._swing_signals_by_key.clear()
+
+        # Load new signals
+        for sig in new_signals:
+            self.swing_by_symbol.setdefault(sig.symbol, []).append(SwingRuntime(sig))
+            key = f"{sig.symbol}_{sig.strategy_id}"
+            self._swing_signals_by_key[key] = sig
+
+        new_symbols = set(self.swing_by_symbol.keys())
+
+        # Subscribe to new symbols that weren't already subscribed
+        symbols_to_subscribe = new_symbols - set(self.contracts.keys())
+        if symbols_to_subscribe:
+            self._subscribe_new_symbols(symbols_to_subscribe)
+
+        # Attach contracts to new signals
+        for sym, contract in self.contracts.items():
+            for rt in self.swing_by_symbol.get(sym, []):
+                setattr(rt.signal, "contract", contract)
+
+        # Update GapManager's swing signals lookup if available
+        if hasattr(self, 'gap_manager') and self.gap_manager is not None:
+            self.gap_manager.swing_signals_by_key = self._swing_signals_by_key
+
+        self.logger.info(
+            "[ENGINE] Updated swing signals: %d signals, %d symbols (was %d symbols)",
+            len(new_signals), len(new_symbols), len(old_symbols),
+        )
+
+    def _subscribe_new_symbols(self, symbols: set) -> None:
+        """Subscribe to market data for new symbols."""
+        for sym in sorted(symbols):
+            if sym in self.contracts:
+                continue  # Already subscribed
+
+            base = Stock(sym, "SMART", "USD")
+            try:
+                qualified_list = self.ib.qualifyContracts(base)
+            except Exception as exc:
+                self.logger.warning(
+                    "[MD] Rollover: Skipping %s: qualifyContracts() raised %s", sym, exc
+                )
+                continue
+
+            if not qualified_list:
+                self.logger.warning(
+                    "[MD] Rollover: Skipping %s: no contract definition", sym
+                )
+                continue
+
+            contract = qualified_list[0]
+            self.contracts[sym] = contract
+
+            try:
+                ticker: Ticker = self.ib.reqMktData(contract, "", False, False)
+            except Exception as exc:
+                self.logger.warning(
+                    "[MD] Rollover: Failed to subscribe %s: %s", sym, exc
+                )
+                continue
+
+            self.tickers[sym] = ticker
+
+            def _on_update(t: Ticker, symbol=sym):
+                self.on_ticker(symbol, t)
+
+            ticker.updateEvent += _on_update
+            self.logger.info("[MD] Rollover: Subscribed to new symbol %s", sym)
+
     # ---------- gap-at-open check ---------- #
 
     def _load_gap_check_date(self) -> Optional[date]:

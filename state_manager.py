@@ -841,6 +841,67 @@ class SignalCache:
 
         return sum(1 for sig in entry.get("signals", []) if not sig.get("filled", False))
 
+    def clear_day_fills(self, d: date) -> int:
+        """
+        Clear all fill flags for day signals on a specific date.
+
+        Used during daily rollover to reset fill tracking for new day.
+
+        Args:
+            d: The date to clear fills for
+
+        Returns:
+            Number of signals cleared
+        """
+        cache = self._get_cache_bucket()
+        key = d.isoformat()
+        entry = cache["day"].get(key)
+
+        if entry is None:
+            return 0
+
+        cleared = 0
+        for sig in entry.get("signals", []):
+            if sig.get("filled", False):
+                sig["filled"] = False
+                cleared += 1
+
+        if cleared > 0:
+            self._save()
+
+        return cleared
+
+    def clear_swing_fills(self, d: date) -> int:
+        """
+        Clear all fill flags for swing signals for the week containing date.
+
+        Used during Monday rollover to reset fill tracking for new week.
+
+        Args:
+            d: Any date in the week to clear fills for
+
+        Returns:
+            Number of signals cleared
+        """
+        cache = self._get_cache_bucket()
+        monday = monday_of_week(d)
+        key = monday.isoformat()
+        entry = cache["swing"].get(key)
+
+        if entry is None:
+            return 0
+
+        cleared = 0
+        for sig in entry.get("signals", []):
+            if sig.get("filled", False):
+                sig["filled"] = False
+                cleared += 1
+
+        if cleared > 0:
+            self._save()
+
+        return cleared
+
 
 class StateManager:
     """
