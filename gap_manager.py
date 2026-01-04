@@ -725,8 +725,8 @@ class GapManager:
         Called after the MKT order fills.
 
         Exit timing depends on signal type:
-        - DAY: Same-day timed exit at ~12:58 PT
-        - SWING: Next Monday @ 6:30 AM PT (holds through weekend)
+        - DAY: Same-day timed exit at ~12:58 PT, stop GTC
+        - SWING: Stop GTD Friday close, timed exit GAT next Monday @ 6:30 AM PT
         """
         from ib_insync import Order
         from orders import make_stock_contract, _get_swing_exit_times
@@ -746,7 +746,7 @@ class GapManager:
 
             # Get exit timing based on signal type
             if signal_type.upper() == "SWING":
-                # Swing: next Monday timing
+                # Swing: stop GTD Friday close, timed exit GAT next Monday
                 _, stop_gtd_str, timed_gat_str = _get_swing_exit_times(trade_date)
                 stop_tif = "GTD"
             else:
