@@ -67,6 +67,7 @@ from conflict_resolver import ConflictResolver
 from reentry_manager import ReentryManager
 from gap_manager import GapManager
 from rollover_manager import RolloverManager
+from connection_manager import ConnectionManager
 
 
 # === IB CONNECTION CONFIG ===
@@ -237,10 +238,14 @@ def main() -> None:
     # === Phase 1: IB connection skeleton ===
     ib = IB()
 
-    def on_disconnected():
-        logger.warning("[WARN] Disconnected from IBKR.")
-
-    ib.disconnectedEvent += on_disconnected
+    # Initialize ConnectionManager for auto-reconnection (callback set later)
+    connection_manager = ConnectionManager(
+        ib=ib,
+        logger=logger,
+        host=IB_HOST,
+        port=IB_PORT,
+        client_id=IB_CLIENT_ID,
+    )
 
     logger.info(
         "[STATUS] Connecting to IBKR at %s:%s with clientId=%s ...",
@@ -367,6 +372,11 @@ def main() -> None:
         rollover_manager.start()
         logger.info("[STATUS] RolloverManager started for 24/7 daily/weekly rollover at 6 AM PST.")
 
+        # === ConnectionManager for auto-reconnection ===
+        connection_manager.set_reconnected_callback(engine.resubscribe_all)
+        connection_manager.start()
+        logger.info("[STATUS] ConnectionManager started for auto-reconnection with exponential backoff.")
+
         # Run market open gap check if starting during RTH
         if is_rth(now_pt()):
             engine.run_market_open_gap_check()
@@ -384,6 +394,11 @@ def main() -> None:
     except Exception as exc:
         logger.exception("[WARN] Unhandled exception in main(): %s", exc)
     finally:
+        # Stop connection manager if it was started
+        try:
+            connection_manager.stop()
+        except NameError:
+            pass  # connection_manager wasn't created yet
         # Stop rollover manager if it was started
         try:
             rollover_manager.stop()

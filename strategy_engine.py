@@ -310,6 +310,76 @@ class StrategyEngine:
             ticker.updateEvent += _on_update
             self.logger.info("[MD] Rollover: Subscribed to new symbol %s", sym)
 
+    def resubscribe_all(self) -> None:
+        """
+        Re-subscribe to market data for all symbols after reconnection.
+
+        Called by ConnectionManager after successfully reconnecting to IBKR.
+        Clears old tickers and creates fresh subscriptions.
+        """
+        self.logger.info("[MD] Re-subscribing to market data after reconnection...")
+
+        # Get all symbols we should be subscribed to
+        all_symbols = set(self.day_by_symbol.keys()) | set(self.swing_by_symbol.keys())
+
+        if not all_symbols:
+            self.logger.info("[MD] No symbols to re-subscribe (no signals loaded).")
+            return
+
+        # Clear old tickers (they're stale after disconnect)
+        self.tickers.clear()
+
+        subscribed = []
+        failed = []
+
+        for sym in sorted(all_symbols):
+            # Use existing contract if we have it
+            contract = self.contracts.get(sym)
+            if contract is None:
+                # Try to qualify the contract
+                base = Stock(sym, "SMART", "USD")
+                try:
+                    qualified_list = self.ib.qualifyContracts(base)
+                    if qualified_list:
+                        contract = qualified_list[0]
+                        self.contracts[sym] = contract
+                except Exception as exc:
+                    self.logger.warning(
+                        "[MD] Reconnect: Failed to qualify %s: %s", sym, exc
+                    )
+                    failed.append(sym)
+                    continue
+
+            if contract is None:
+                failed.append(sym)
+                continue
+
+            try:
+                ticker: Ticker = self.ib.reqMktData(contract, "", False, False)
+
+                def _on_update(t: Ticker, symbol=sym):
+                    self.on_ticker(symbol, t)
+
+                ticker.updateEvent += _on_update
+                self.tickers[sym] = ticker
+                subscribed.append(sym)
+
+            except Exception as exc:
+                self.logger.warning(
+                    "[MD] Reconnect: Failed to subscribe %s: %s", sym, exc
+                )
+                failed.append(sym)
+
+        self.logger.info(
+            "[MD] Re-subscribed to %d symbols after reconnection. Failed: %d",
+            len(subscribed), len(failed),
+        )
+
+        if failed:
+            self.logger.warning(
+                "[MD] Symbols that failed to re-subscribe: %s", ", ".join(failed)
+            )
+
     # ---------- gap-at-open check ---------- #
 
     def _load_gap_check_date(self) -> Optional[date]:
