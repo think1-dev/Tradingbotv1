@@ -725,7 +725,7 @@ class GapManager:
         Called after the MKT order fills.
 
         Exit timing depends on signal type:
-        - DAY: Same-day timed exit at ~12:58 PT, stop GTC
+        - DAY: Stop GTD ~12:55 PT, timed exit GAT ~12:58 PT (same day)
         - SWING: Stop GTD Friday close, timed exit GAT next Monday @ 6:30 AM PT
         """
         from ib_insync import Order
@@ -748,27 +748,25 @@ class GapManager:
             if signal_type.upper() == "SWING":
                 # Swing: stop GTD Friday close, timed exit GAT next Monday
                 _, stop_gtd_str, timed_gat_str = _get_swing_exit_times(trade_date)
-                stop_tif = "GTD"
             else:
-                # Day: same-day timing
+                # Day: stop GTD ~12:55 PT, timed exit GAT ~12:58 PT
+                from time_utils import get_day_stop_time_pt
                 exit_time = get_day_exit_time_pt()
+                stop_time = get_day_stop_time_pt()
                 timed_gat_str = f"{trade_date.strftime('%Y%m%d')} {exit_time.strftime('%H:%M:%S')} US/Pacific"
-                stop_gtd_str = None
-                stop_tif = "GTC"
+                stop_gtd_str = f"{trade_date.strftime('%Y%m%d')} {stop_time.strftime('%H:%M:%S')} US/Pacific"
+            stop_tif = "GTD"
 
-            # Create stop order
+            # Create stop order (GTD for both day and swing)
             stop_order = Order(
                 action=exit_action,
                 orderType="STP",
                 totalQuantity=shares,
                 auxPrice=stop_price,
                 tif=stop_tif,
+                goodTillDate=stop_gtd_str,
                 transmit=False,
             )
-
-            # Set GTD for swing stops
-            if stop_gtd_str is not None:
-                stop_order.goodTillDate = stop_gtd_str
 
             # Create timed exit order
             timed_order = Order(
