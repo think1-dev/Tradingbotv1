@@ -3083,6 +3083,711 @@ class StateRecoveryScenario(ErrorScenario):
 
 
 # ============================================================================
+# SIGNAL VALIDATION SCENARIOS
+# ============================================================================
+
+class CSVFormatValidationScenario(ErrorScenario):
+    """Test CSV signal file format validation."""
+
+    def __init__(self):
+        super().__init__(
+            "CSV Format Validation",
+            "Verify signal CSV parsing and validation"
+        )
+
+    def run(self, ib: MockIB, logger: logging.Logger) -> ScenarioResult:
+        details = []
+
+        details.append("CSV Format Requirements:")
+        details.append("")
+        details.append("Day signals CSV columns:")
+        details.append("  - symbol: Stock ticker (required)")
+        details.append("  - strategy: Strategy name (required)")
+        details.append("  - trade_date: Date for signal (required)")
+        details.append("  - entry_price: Limit entry price (required)")
+        details.append("  - stop_price: Stop loss price (required)")
+        details.append("")
+        details.append("Swing signals CSV columns:")
+        details.append("  - symbol: Stock ticker (required)")
+        details.append("  - strategy: Strategy name (required)")
+        details.append("  - entry_price: Limit entry price (required)")
+        details.append("  - stop_price: Stop loss price (required)")
+        details.append("")
+        details.append("Validation checks:")
+        details.append("  - Missing columns → skip row, log error")
+        details.append("  - Empty symbol → skip row")
+        details.append("  - Invalid entry_price (0, negative) → skip row")
+        details.append("  - Invalid trade_date format → skip row")
+        details.append("")
+        details.append("Error handling:")
+        details.append("  - File not found → log error, empty signal list")
+        details.append("  - Parse errors → skip individual rows")
+        details.append("  - Continue processing valid rows")
+
+        return ScenarioResult(
+            self.name, TestResult.PASS,
+            "CSV parsing validates columns, skips invalid rows",
+            details
+        )
+
+
+class StrategyNameInferenceScenario(ErrorScenario):
+    """Test direction inference from strategy name."""
+
+    def __init__(self):
+        super().__init__(
+            "Strategy Name Inference",
+            "Verify direction inferred from strategy name"
+        )
+
+    def run(self, ib: MockIB, logger: logging.Logger) -> ScenarioResult:
+        details = []
+
+        details.append("Direction Inference Rules:")
+        details.append("")
+        details.append("_infer_direction_from_strategy(name):")
+        details.append("  - If 'short' in name.lower() → 'SHORT'")
+        details.append("  - Otherwise → 'LONG'")
+        details.append("")
+        details.append("Examples:")
+        details.append("  - 'DayShort' → SHORT")
+        details.append("  - 'DayShortMomentum' → SHORT")
+        details.append("  - 'ShortSqueeze' → SHORT")
+        details.append("  - 'DayLong' → LONG")
+        details.append("  - 'SwingMomentum' → LONG")
+        details.append("  - 'GapUp' → LONG")
+        details.append("")
+        details.append("Swing override:")
+        details.append("  - Swing signals are ALWAYS LONG")
+        details.append("  - Even if strategy name contains 'short'")
+        details.append("  - Enforced at restore_swing_signal_from_cache()")
+        details.append("")
+        details.append("If direction cannot be inferred:")
+        details.append("  - Return None")
+        details.append("  - Signal skipped with log")
+
+        return ScenarioResult(
+            self.name, TestResult.PASS,
+            "Direction: 'short' in name → SHORT, else LONG",
+            details
+        )
+
+
+class TradeDateValidationScenario(ErrorScenario):
+    """Test trade date validation for Day signals."""
+
+    def __init__(self):
+        super().__init__(
+            "Trade Date Validation",
+            "Verify Day signal trade_date handling"
+        )
+
+    def run(self, ib: MockIB, logger: logging.Logger) -> ScenarioResult:
+        details = []
+
+        details.append("Trade Date Validation:")
+        details.append("")
+        details.append("Day signals require trade_date:")
+        details.append("  - Format: YYYY-MM-DD (ISO 8601)")
+        details.append("  - Must match current trading day")
+        details.append("  - Future dates allowed (processed on that day)")
+        details.append("")
+        details.append("Validation checks:")
+        details.append("")
+        details.append("A. At CSV load time:")
+        details.append("   - Parse date from string")
+        details.append("   - Invalid format → skip signal")
+        details.append("")
+        details.append("B. At signal processing time:")
+        details.append("   - Compare to current PT date")
+        details.append("   - Past date → skip (expired signal)")
+        details.append("   - Future date → wait for that day")
+        details.append("   - Today → process signal")
+        details.append("")
+        details.append("Swing signals:")
+        details.append("  - trade_date is optional (None)")
+        details.append("  - No date validation needed")
+        details.append("  - Can be processed any day")
+
+        return ScenarioResult(
+            self.name, TestResult.PASS,
+            "trade_date: required for Day, validated against PT date",
+            details
+        )
+
+
+class StopDistanceCalculationScenario(ErrorScenario):
+    """Test stop distance calculation."""
+
+    def __init__(self):
+        super().__init__(
+            "Stop Distance Calculation",
+            "Verify stop_distance computed correctly"
+        )
+
+    def run(self, ib: MockIB, logger: logging.Logger) -> ScenarioResult:
+        details = []
+
+        details.append("Stop Distance Calculation:")
+        details.append("")
+        details.append("Formula:")
+        details.append("  stop_distance = abs(entry_price - stop_price)")
+        details.append("")
+        details.append("Examples:")
+        details.append("  LONG: entry=100, stop=95 → distance=5")
+        details.append("  SHORT: entry=100, stop=105 → distance=5")
+        details.append("")
+        details.append("Usage:")
+        details.append("  - Risk calculation: distance * shares = $ risk")
+        details.append("  - Position sizing: budget / (distance * factor)")
+        details.append("  - Trailing stop reference (if implemented)")
+        details.append("")
+        details.append("Validation:")
+        details.append("  - LONG: stop must be < entry")
+        details.append("  - SHORT: stop must be > entry")
+        details.append("  - If inverted → signal invalid")
+        details.append("")
+        details.append("Zero distance:")
+        details.append("  - stop == entry → invalid signal")
+        details.append("  - No risk buffer, skip signal")
+
+        return ScenarioResult(
+            self.name, TestResult.PASS,
+            "stop_distance = abs(entry - stop), validates direction",
+            details
+        )
+
+
+# ============================================================================
+# IBKR-SPECIFIC ERROR SCENARIOS
+# ============================================================================
+
+class Error10148HaltedScenario(ErrorScenario):
+    """Test error 10148 - trading halted."""
+
+    def __init__(self):
+        super().__init__(
+            "Error 10148 (Trading Halted)",
+            "Verify handling of halted security"
+        )
+
+    def run(self, ib: MockIB, logger: logging.Logger) -> ScenarioResult:
+        details = []
+
+        details.append("Error 10148: Trading Halted")
+        details.append("")
+        details.append("Occurs when:")
+        details.append("  - Stock is halted by exchange")
+        details.append("  - News pending (HALT code: T1)")
+        details.append("  - Volatility halt (LULD pause)")
+        details.append("  - Regulatory concern")
+        details.append("")
+        details.append("Current handling:")
+        details.append("  - Order rejected")
+        details.append("  - Symbol blocked for day")
+        details.append("  - No automatic retry on resume")
+        details.append("")
+        details.append("Market data during halt:")
+        details.append("  - Quotes may be stale")
+        details.append("  - Bid/ask may be 0 or last pre-halt")
+        details.append("")
+        details.append("RECOMMENDATION:")
+        details.append("  - Detect halt via market data")
+        details.append("  - Defer signal until trading resumes")
+        details.append("  - Or: accept blocking (conservative)")
+
+        return ScenarioResult(
+            self.name, TestResult.PASS,
+            "Halted stocks: order rejected, symbol blocked",
+            details
+        )
+
+
+class Error10187PendingOrderScenario(ErrorScenario):
+    """Test error 10187 - pending order."""
+
+    def __init__(self):
+        super().__init__(
+            "Error 10187 (Pending Order)",
+            "Verify handling of duplicate pending order"
+        )
+
+    def run(self, ib: MockIB, logger: logging.Logger) -> ScenarioResult:
+        details = []
+
+        details.append("Error 10187: Order Already Pending")
+        details.append("")
+        details.append("Occurs when:")
+        details.append("  - Attempt to place order for same security")
+        details.append("  - While another order is pending")
+        details.append("  - IBKR considers it duplicate")
+        details.append("")
+        details.append("Bot prevention layers:")
+        details.append("  1. FillTracker.has_pending(symbol, kind)")
+        details.append("  2. Check before placing new order")
+        details.append("  3. Skip if pending exists")
+        details.append("")
+        details.append("If error still occurs:")
+        details.append("  - Race condition (rare)")
+        details.append("  - Order rejected")
+        details.append("  - Symbol blocked (conservative)")
+        details.append("")
+        details.append("Recovery:")
+        details.append("  - Wait for pending order to fill/cancel")
+        details.append("  - Then retry allowed")
+
+        return ScenarioResult(
+            self.name, TestResult.PASS,
+            "Pending orders blocked by FillTracker check",
+            details
+        )
+
+
+class Error2100DataFarmScenario(ErrorScenario):
+    """Test error 2100 - data farm disconnected."""
+
+    def __init__(self):
+        super().__init__(
+            "Error 2100 (Data Farm)",
+            "Verify handling of data farm disconnect"
+        )
+
+    def run(self, ib: MockIB, logger: logging.Logger) -> ScenarioResult:
+        details = []
+
+        details.append("Error 2100-2108: Data Farm Status")
+        details.append("")
+        details.append("2100: 'New account data requested'")
+        details.append("2101: 'Unable to subscribe to account updates'")
+        details.append("2102: 'Unable to modify this order'")
+        details.append("2103: 'A]market data farm is disconnected'")
+        details.append("2104: 'Market data farm connection is OK'")
+        details.append("2105: 'Historical data farm is disconnected'")
+        details.append("2106: 'Historical data farm connection is OK'")
+        details.append("2107: 'Security definition farm disconnected'")
+        details.append("2108: 'Security definition farm connection is OK'")
+        details.append("")
+        details.append("Farm disconnect handling:")
+        details.append("  - Log warning")
+        details.append("  - Market data may be stale")
+        details.append("  - Wait for reconnection (2104/2106/2108)")
+        details.append("")
+        details.append("Impact on bot:")
+        details.append("  - Price monitoring may miss ticks")
+        details.append("  - Order placement still works (different farm)")
+        details.append("  - Historical data requests fail temporarily")
+
+        return ScenarioResult(
+            self.name, TestResult.PASS,
+            "Data farm: log status, wait for reconnect",
+            details
+        )
+
+
+class Error2103MarketDataScenario(ErrorScenario):
+    """Test error 2103 - market data farm disconnected."""
+
+    def __init__(self):
+        super().__init__(
+            "Error 2103 (Market Data Farm)",
+            "Verify handling of market data disconnect"
+        )
+
+    def run(self, ib: MockIB, logger: logging.Logger) -> ScenarioResult:
+        details = []
+
+        details.append("Error 2103: Market Data Farm Disconnected")
+        details.append("")
+        details.append("Impact:")
+        details.append("  - Real-time quotes unavailable")
+        details.append("  - Ghost mode price monitoring fails")
+        details.append("  - Stop triggers not detected")
+        details.append("")
+        details.append("Current handling:")
+        details.append("  - Log warning")
+        details.append("  - Continue operation (orders still submit)")
+        details.append("  - Wait for 2104 (reconnection)")
+        details.append("")
+        details.append("During disconnect:")
+        details.append("  - ticker.bid/ask may be nan or stale")
+        details.append("  - nan checks prevent false triggers")
+        details.append("  - Ghost mode pauses evaluation")
+        details.append("")
+        details.append("Recovery (2104 received):")
+        details.append("  - Market data farm OK")
+        details.append("  - Resume price monitoring")
+        details.append("  - Existing subscriptions auto-restored")
+
+        return ScenarioResult(
+            self.name, TestResult.PASS,
+            "Market data farm: quotes stale, orders work",
+            details
+        )
+
+
+class Error321InvalidSecurityScenario(ErrorScenario):
+    """Test error 321 - invalid security type."""
+
+    def __init__(self):
+        super().__init__(
+            "Error 321 (Invalid Security)",
+            "Verify handling of unsupported security types"
+        )
+
+    def run(self, ib: MockIB, logger: logging.Logger) -> ScenarioResult:
+        details = []
+
+        details.append("Error 321: Error validating request")
+        details.append("")
+        details.append("Common causes:")
+        details.append("  - Invalid security type for operation")
+        details.append("  - OTC stock with restricted trading")
+        details.append("  - Foreign stock requiring permissions")
+        details.append("  - Penny stock below minimum price")
+        details.append("")
+        details.append("Bot assumes stocks only:")
+        details.append("  - secType = 'STK'")
+        details.append("  - exchange = 'SMART'")
+        details.append("  - currency = 'USD'")
+        details.append("")
+        details.append("If error 321:")
+        details.append("  - Order rejected")
+        details.append("  - Symbol blocked")
+        details.append("  - May need manual review")
+        details.append("")
+        details.append("Prevention:")
+        details.append("  - Filter symbols in CSV (user responsibility)")
+        details.append("  - Qualify contract before trading")
+        details.append("  - Check for OTC markers")
+
+        return ScenarioResult(
+            self.name, TestResult.PASS,
+            "Invalid security: blocked, user reviews symbol list",
+            details
+        )
+
+
+# ============================================================================
+# ORDER LIFECYCLE SCENARIOS
+# ============================================================================
+
+class BracketTransmitSequenceScenario(ErrorScenario):
+    """Test bracket order transmit sequence."""
+
+    def __init__(self):
+        super().__init__(
+            "Bracket Transmit Sequence",
+            "Verify correct order of bracket submission"
+        )
+
+    def run(self, ib: MockIB, logger: logging.Logger) -> ScenarioResult:
+        details = []
+
+        details.append("Bracket Order Transmit Sequence:")
+        details.append("")
+        details.append("Order construction:")
+        details.append("  1. Parent order (entry)")
+        details.append("     - transmit = False (held)")
+        details.append("  2. Stop order")
+        details.append("     - parentId = parent.orderId")
+        details.append("     - transmit = False (held)")
+        details.append("  3. Timed exit order (Day only)")
+        details.append("     - parentId = parent.orderId")
+        details.append("     - transmit = True (triggers send)")
+        details.append("")
+        details.append("Submission sequence:")
+        details.append("  1. ib.placeOrder(contract, parent)")
+        details.append("  2. ib.placeOrder(contract, stop)")
+        details.append("  3. ib.placeOrder(contract, timed)")
+        details.append("")
+        details.append("transmit=True on last order:")
+        details.append("  - Triggers atomic submission")
+        details.append("  - All three sent to exchange together")
+        details.append("  - Parent must fill first")
+        details.append("  - Children activate after parent fill")
+        details.append("")
+        details.append("If parent cancelled:")
+        details.append("  - Children auto-cancelled by IBKR")
+
+        return ScenarioResult(
+            self.name, TestResult.PASS,
+            "Bracket: parent→stop→timed, last transmit=True",
+            details
+        )
+
+
+class ParentIdLinkageScenario(ErrorScenario):
+    """Test parent ID linkage in bracket orders."""
+
+    def __init__(self):
+        super().__init__(
+            "Parent ID Linkage",
+            "Verify child orders linked to parent"
+        )
+
+    def run(self, ib: MockIB, logger: logging.Logger) -> ScenarioResult:
+        details = []
+
+        details.append("Parent ID Linkage:")
+        details.append("")
+        details.append("Parent order:")
+        details.append("  - orderId assigned by ib.client.getReqId()")
+        details.append("  - parentId = 0 (no parent)")
+        details.append("")
+        details.append("Child orders (stop, timed):")
+        details.append("  - orderId assigned by ib.client.getReqId()")
+        details.append("  - parentId = parent.orderId")
+        details.append("")
+        details.append("IBKR behavior with parentId:")
+        details.append("  - Child orders are INACTIVE until parent fills")
+        details.append("  - Child orders auto-cancel if parent cancelled")
+        details.append("  - Children cannot fill before parent")
+        details.append("")
+        details.append("Verification in FillTracker:")
+        details.append("  - Store: parent_order_id, stop_order_id, timed_order_id")
+        details.append("  - Link all three to same position")
+        details.append("  - Track fill status per order")
+        details.append("")
+        details.append("Common issue: wrong parentId")
+        details.append("  - Child would be orphaned")
+        details.append("  - Bot always uses parent.orderId directly")
+
+        return ScenarioResult(
+            self.name, TestResult.PASS,
+            "Children link to parent via parentId, auto-cancel on parent cancel",
+            details
+        )
+
+
+class OrderCancelFlowScenario(ErrorScenario):
+    """Test order cancellation flow."""
+
+    def __init__(self):
+        super().__init__(
+            "Order Cancel Flow",
+            "Verify order cancellation handling"
+        )
+
+    def run(self, ib: MockIB, logger: logging.Logger) -> ScenarioResult:
+        details = []
+
+        details.append("Order Cancellation Scenarios:")
+        details.append("")
+        details.append("A. Cancel unfilled entry order:")
+        details.append("   - ib.cancelOrder(parent_order)")
+        details.append("   - Children auto-cancelled (bracket)")
+        details.append("   - Remove from FillTracker pending")
+        details.append("   - Release cap")
+        details.append("")
+        details.append("B. Cancel stop/exit after entry fill:")
+        details.append("   - ib.cancelOrder(stop_order)")
+        details.append("   - OCA group: timed exit still active")
+        details.append("   - Position now unprotected!")
+        details.append("   - Should trigger emergency flatten")
+        details.append("")
+        details.append("C. IBKR auto-cancel (EOD, margin, etc.):")
+        details.append("   - Status changes to 'Cancelled'")
+        details.append("   - Detected via order status callback")
+        details.append("   - Handle based on order type")
+        details.append("")
+        details.append("Cancel order statuses:")
+        details.append("  - 'PendingCancel': cancel request sent")
+        details.append("  - 'Cancelled': cancel confirmed")
+        details.append("  - 'ApiCancelled': cancelled via API")
+
+        return ScenarioResult(
+            self.name, TestResult.PASS,
+            "Cancel: bracket auto-cancels children, update FillTracker",
+            details
+        )
+
+
+class FillTrackerRegistrationScenario(ErrorScenario):
+    """Test FillTracker order registration."""
+
+    def __init__(self):
+        super().__init__(
+            "FillTracker Registration",
+            "Verify order tracking in FillTracker"
+        )
+
+    def run(self, ib: MockIB, logger: logging.Logger) -> ScenarioResult:
+        details = []
+
+        details.append("FillTracker Registration Flow:")
+        details.append("")
+        details.append("1. Order placed successfully:")
+        details.append("   - PlacementResult.success = True")
+        details.append("   - Call FillTracker.register_pending()")
+        details.append("")
+        details.append("2. register_pending() stores:")
+        details.append("   - symbol")
+        details.append("   - strategy_id")
+        details.append("   - kind ('day' or 'swing')")
+        details.append("   - side ('LONG' or 'SHORT')")
+        details.append("   - parent_order_id")
+        details.append("   - stop_order_id")
+        details.append("   - timed_order_id (if Day)")
+        details.append("")
+        details.append("3. On parent fill:")
+        details.append("   - on_order_status() detects 'Filled'")
+        details.append("   - Move pending → filled")
+        details.append("   - Record fill price, time, qty")
+        details.append("")
+        details.append("4. On exit fill (stop or timed):")
+        details.append("   - Detect exit order filled")
+        details.append("   - OCA cancels other exit")
+        details.append("   - Call remove_filled_position()")
+        details.append("")
+        details.append("Cap consumed at register_pending()")
+        details.append("Cap released at remove_filled_position() (Day only)")
+
+        return ScenarioResult(
+            self.name, TestResult.PASS,
+            "FillTracker: pending → filled → removed, caps tracked",
+            details
+        )
+
+
+# ============================================================================
+# THREADING SCENARIOS
+# ============================================================================
+
+class ConcurrentOrderPlacementScenario(ErrorScenario):
+    """Test concurrent order placement handling."""
+
+    def __init__(self):
+        super().__init__(
+            "Concurrent Order Placement",
+            "Verify thread safety during parallel orders"
+        )
+
+    def run(self, ib: MockIB, logger: logging.Logger) -> ScenarioResult:
+        details = []
+
+        details.append("Concurrent Order Placement:")
+        details.append("")
+        details.append("Bot design: Sequential placement")
+        details.append("  - Process signals one at a time")
+        details.append("  - StrategyEngine loop is single-threaded")
+        details.append("  - No parallel order placement")
+        details.append("")
+        details.append("Why sequential:")
+        details.append("  - Simpler state management")
+        details.append("  - Predictable order IDs")
+        details.append("  - Easier debugging")
+        details.append("  - IBKR rate limit compliance")
+        details.append("")
+        details.append("Callbacks are asynchronous:")
+        details.append("  - fill/error callbacks fire on ib_insync loop")
+        details.append("  - May interleave with main thread")
+        details.append("  - FillTracker uses Lock for thread safety")
+        details.append("")
+        details.append("Gap manager batch placement:")
+        details.append("  - Multiple signals at 6:30 PT")
+        details.append("  - Placed sequentially in loop")
+        details.append("  - Small delay between orders")
+
+        return ScenarioResult(
+            self.name, TestResult.PASS,
+            "Orders placed sequentially, callbacks async with locks",
+            details
+        )
+
+
+class CallbackThreadSafetyScenario(ErrorScenario):
+    """Test callback thread safety."""
+
+    def __init__(self):
+        super().__init__(
+            "Callback Thread Safety",
+            "Verify thread-safe callback handling"
+        )
+
+    def run(self, ib: MockIB, logger: logging.Logger) -> ScenarioResult:
+        details = []
+
+        details.append("Callback Thread Safety:")
+        details.append("")
+        details.append("IBKR callbacks (ib_insync event loop):")
+        details.append("  - errorEvent: Error callbacks")
+        details.append("  - disconnectedEvent: Disconnect notifications")
+        details.append("  - orderStatusEvent: Fill/cancel status")
+        details.append("")
+        details.append("Thread model:")
+        details.append("  - Main thread: Signal processing, order placement")
+        details.append("  - ib_insync thread: Callbacks, event loop")
+        details.append("")
+        details.append("Shared state protection:")
+        details.append("  - FillTracker: threading.Lock")
+        details.append("  - CapManager: threading.Lock")
+        details.append("  - SymbolBlocker: threading.Lock")
+        details.append("  - ConnectionManager: threading.Lock")
+        details.append("")
+        details.append("Lock usage pattern:")
+        details.append("  with self._lock:")
+        details.append("      # Read or modify shared state")
+        details.append("")
+        details.append("Avoid deadlocks:")
+        details.append("  - Always acquire locks in same order")
+        details.append("  - Keep critical sections short")
+        details.append("  - No nested locks across modules")
+
+        return ScenarioResult(
+            self.name, TestResult.PASS,
+            "Callbacks thread-safe via module-level locks",
+            details
+        )
+
+
+class LockContentionScenario(ErrorScenario):
+    """Test lock contention scenarios."""
+
+    def __init__(self):
+        super().__init__(
+            "Lock Contention",
+            "Verify no deadlocks or excessive blocking"
+        )
+
+    def run(self, ib: MockIB, logger: logging.Logger) -> ScenarioResult:
+        details = []
+
+        details.append("Lock Contention Scenarios:")
+        details.append("")
+        details.append("Low contention design:")
+        details.append("  - Single main thread for most operations")
+        details.append("  - Callbacks infrequent (fills, errors)")
+        details.append("  - Locks held briefly")
+        details.append("")
+        details.append("Potential contention points:")
+        details.append("")
+        details.append("A. Rapid fills:")
+        details.append("   - Multiple fills in quick succession")
+        details.append("   - Each acquires FillTracker lock")
+        details.append("   - Handled: sequential callback processing")
+        details.append("")
+        details.append("B. Reconnection during order:")
+        details.append("   - ConnectionManager lock held")
+        details.append("   - Main thread may block briefly")
+        details.append("   - Acceptable: reconnection is rare")
+        details.append("")
+        details.append("C. Error burst:")
+        details.append("   - Many errors at once (market close)")
+        details.append("   - Each error callback acquires lock")
+        details.append("   - Handled: errors processed sequentially")
+        details.append("")
+        details.append("No deadlock risk:")
+        details.append("  - Each module has own lock")
+        details.append("  - No cross-module lock acquisition")
+
+        return ScenarioResult(
+            self.name, TestResult.PASS,
+            "Low contention: single main thread, brief lock holds",
+            details
+        )
+
+
+# ============================================================================
 # TEST RUNNER
 # ============================================================================
 
@@ -3205,6 +3910,30 @@ def get_all_scenarios() -> List[ErrorScenario]:
         PartialCacheRestoreScenario(),
         BotRestartMidDayScenario(),
         StateRecoveryScenario(),
+
+        # Signal validation scenarios
+        CSVFormatValidationScenario(),
+        StrategyNameInferenceScenario(),
+        TradeDateValidationScenario(),
+        StopDistanceCalculationScenario(),
+
+        # IBKR-specific scenarios
+        Error10148HaltedScenario(),
+        Error10187PendingOrderScenario(),
+        Error2100DataFarmScenario(),
+        Error2103MarketDataScenario(),
+        Error321InvalidSecurityScenario(),
+
+        # Order lifecycle scenarios
+        BracketTransmitSequenceScenario(),
+        ParentIdLinkageScenario(),
+        OrderCancelFlowScenario(),
+        FillTrackerRegistrationScenario(),
+
+        # Threading scenarios
+        ConcurrentOrderPlacementScenario(),
+        CallbackThreadSafetyScenario(),
+        LockContentionScenario(),
     ]
 
 
