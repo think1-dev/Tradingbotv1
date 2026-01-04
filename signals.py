@@ -299,11 +299,19 @@ def restore_day_signal_from_cache(cached: dict) -> DaySignal:
     if isinstance(trade_date, str):
         trade_date = date.fromisoformat(trade_date)
 
+    # Validate direction exists and is valid
+    direction = cached.get("direction")
+    if direction is None:
+        raise ValueError(f"Cached DaySignal for {cached.get('symbol')} missing direction")
+    direction = direction.upper()
+    if direction not in ("LONG", "SHORT"):
+        raise ValueError(f"Cached DaySignal for {cached.get('symbol')} has invalid direction: {direction}")
+
     return DaySignal(
         strategy_id=cached["strategy_id"],
         symbol=cached["symbol"],
         trade_date=trade_date,
-        direction=cached["direction"],
+        direction=direction,
         entry_price=float(cached["entry_price"]),
         stop_price=float(cached["stop_price"]),
         shares=int(cached["shares"]),
@@ -314,10 +322,18 @@ def restore_day_signal_from_cache(cached: dict) -> DaySignal:
 
 def restore_swing_signal_from_cache(cached: dict) -> SwingSignal:
     """Restore a SwingSignal object from cached dict data."""
+    # Validate direction exists and is LONG (swings are long-only)
+    direction = cached.get("direction")
+    if direction is None:
+        raise ValueError(f"Cached SwingSignal for {cached.get('symbol')} missing direction")
+    direction = direction.upper()
+    if direction != "LONG":
+        raise ValueError(f"Cached SwingSignal for {cached.get('symbol')} has invalid direction: {direction} (must be LONG)")
+
     return SwingSignal(
         strategy_id=cached["strategy_id"],
         symbol=cached["symbol"],
-        direction=cached["direction"],
+        direction=direction,
         entry_price=float(cached["entry_price"]),
         stop_price=float(cached["stop_price"]),
         shares=int(cached["shares"]),

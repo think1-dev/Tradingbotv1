@@ -161,7 +161,14 @@ def build_day_bracket(
     qty = signal.shares
     entry = signal.entry_price
     stop_price = signal.stop_price
-    direction = getattr(signal, "direction", "LONG").upper()
+
+    # Direction is required - do not assume
+    raw_direction = getattr(signal, "direction", None)
+    if raw_direction is None:
+        raise ValueError(f"Signal for {symbol} missing direction attribute")
+    direction = raw_direction.upper()
+    if direction not in ("LONG", "SHORT"):
+        raise ValueError(f"Signal for {symbol} has invalid direction: {direction}")
 
     contract = make_stock_contract(symbol)
 
