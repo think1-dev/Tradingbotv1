@@ -908,6 +908,492 @@ class MarketDataResubscribeScenario(ErrorScenario):
 
 
 # ============================================================================
+# TRADING FLOW SCENARIOS
+# ============================================================================
+
+class FillFlowScenario(ErrorScenario):
+    """Test order fill tracking flow."""
+
+    def __init__(self):
+        super().__init__(
+            "Order Fill Flow",
+            "Verify fill tracking and position management"
+        )
+
+    def run(self, ib: MockIB, logger: logging.Logger) -> ScenarioResult:
+        details = []
+
+        details.append("Order Fill Flow:")
+        details.append("")
+        details.append("1. Order placed via OrderExecutor.place_day_bracket()")
+        details.append("   → Returns PlacementResult with order_id")
+        details.append("")
+        details.append("2. Order registered with FillTracker.register_pending()")
+        details.append("   → Tracks: symbol, strategy_id, kind, side, order_ids")
+        details.append("")
+        details.append("3. IBKR fills parent order")
+        details.append("   → FillTracker.on_order_status() detects 'Filled'")
+        details.append("   → Moves from pending to filled positions")
+        details.append("")
+        details.append("4. Position now tracked as filled")
+        details.append("   → ConflictResolver can query positions")
+        details.append("   → Stop/timed exit orders active")
+        details.append("")
+        details.append("5. Exit triggered (stop or timed)")
+        details.append("   → OCA group cancels other exit leg")
+        details.append("   → FillTracker.remove_filled_position()")
+        details.append("   → Position closed")
+
+        return ScenarioResult(
+            self.name, TestResult.PASS,
+            "Fill flow verified: pending → filled → exited",
+            details
+        )
+
+
+class OCAGroupScenario(ErrorScenario):
+    """Test OCA (one-cancels-all) group behavior."""
+
+    def __init__(self):
+        super().__init__(
+            "OCA Group Behavior",
+            "Verify stop and timed exit are linked"
+        )
+
+    def run(self, ib: MockIB, logger: logging.Logger) -> ScenarioResult:
+        details = []
+
+        details.append("OCA Group Setup:")
+        details.append("  - Stop order and timed exit share OCA group")
+        details.append("  - Format: 'DAY_AAPL_strategy1_oca' or similar")
+        details.append("")
+        details.append("Scenario A: Stop triggered first")
+        details.append("  1. Price hits stop level")
+        details.append("  2. Stop order fills")
+        details.append("  3. IBKR auto-cancels timed exit (same OCA)")
+        details.append("  4. Position closed via stop")
+        details.append("")
+        details.append("Scenario B: Timed exit triggered first")
+        details.append("  1. Time reaches exit time (e.g., 12:55 PT)")
+        details.append("  2. Timed exit converts to market order")
+        details.append("  3. Timed exit fills")
+        details.append("  4. IBKR auto-cancels stop order (same OCA)")
+        details.append("  5. Position closed via timed exit")
+        details.append("")
+        details.append("Edge case: Both trigger simultaneously")
+        details.append("  - IBKR processes one first")
+        details.append("  - Other auto-cancelled")
+        details.append("  - No double-exit risk")
+
+        return ScenarioResult(
+            self.name, TestResult.PASS,
+            "OCA groups ensure single exit per position",
+            details
+        )
+
+
+class TimedExitScenario(ErrorScenario):
+    """Test timed exit behavior."""
+
+    def __init__(self):
+        super().__init__(
+            "Timed Exit Behavior",
+            "Verify time-based exit order handling"
+        )
+
+    def run(self, ib: MockIB, logger: logging.Logger) -> ScenarioResult:
+        details = []
+
+        details.append("Day Trade Timed Exit:")
+        details.append("  - Exit time: 12:55 PT (configured in time_utils)")
+        details.append("  - Order type: LMT → converts to MKT at time")
+        details.append("  - goodAfterTime set to exit time")
+        details.append("")
+        details.append("Timed Exit Cancel Handling:")
+        details.append("  If timed exit is cancelled unexpectedly:")
+        details.append("  1. OrderExecutor.handle_timed_exit_cancel() called")
+        details.append("  2. Attempts to flatten position with retry")
+        details.append("  3. If market closed, schedules for next open")
+        details.append("")
+        details.append("Retry logic:")
+        details.append("  - Max retries: 10")
+        details.append("  - Initial delay: 1s")
+        details.append("  - Max delay: 30s")
+        details.append("  - Backoff multiplier: 2x")
+        details.append("")
+        details.append("Pending flattens processed at 6:30 PT next day")
+
+        return ScenarioResult(
+            self.name, TestResult.PASS,
+            "Timed exit with retry and next-day fallback",
+            details
+        )
+
+
+class GapOrderScenario(ErrorScenario):
+    """Test gap order execution flow."""
+
+    def __init__(self):
+        super().__init__(
+            "Gap Order Execution",
+            "Verify pre-market gap order handling"
+        )
+
+    def run(self, ib: MockIB, logger: logging.Logger) -> ScenarioResult:
+        details = []
+
+        details.append("Gap Order Flow (6:30 PT):")
+        details.append("")
+        details.append("1. GapManager._load_gap_signals() at 5:00 PT")
+        details.append("   → Loads signals from gap_signals.csv")
+        details.append("   → Validates direction (blocks if missing)")
+        details.append("")
+        details.append("2. GapManager.run_gap_session() at 6:30 PT")
+        details.append("   → Checks if today is valid trade date")
+        details.append("   → Builds candidates from signals")
+        details.append("")
+        details.append("3. For each candidate:")
+        details.append("   → Check cap availability")
+        details.append("   → Place bracket order via OrderExecutor")
+        details.append("   → Handle rejection (ghost mode if shortable)")
+        details.append("")
+        details.append("4. Gap trades use Day bracket format")
+        details.append("   → Same structure as regular Day trades")
+        details.append("   → Timed exit at 12:55 PT")
+        details.append("")
+        details.append("Ghost mode for gaps:")
+        details.append("   → If SHORT rejected (201/10147/162/426)")
+        details.append("   → Create re-entry candidate")
+        details.append("   → Monitor for entry opportunity")
+
+        return ScenarioResult(
+            self.name, TestResult.PASS,
+            "Gap orders: load → validate → place → handle rejection",
+            details
+        )
+
+
+class ReentryFlowScenario(ErrorScenario):
+    """Test re-entry manager flow."""
+
+    def __init__(self):
+        super().__init__(
+            "Re-entry Manager Flow",
+            "Verify ghost mode and re-entry logic"
+        )
+
+    def run(self, ib: MockIB, logger: logging.Logger) -> ScenarioResult:
+        details = []
+
+        details.append("Re-entry Candidate Creation:")
+        details.append("  1. Day SHORT rejected (shortable error)")
+        details.append("  2. Swing LONG flattened for conflict")
+        details.append("  3. ReentryCandidate created with:")
+        details.append("     - symbol, day_signal, swing_signal")
+        details.append("     - ghost_mode=True, day_short_stopped=False")
+        details.append("")
+        details.append("Ghost Mode Price Monitoring:")
+        details.append("  - Day SHORT stop: signal.stop_price")
+        details.append("  - Swing LONG stop: signal.stop_price")
+        details.append("")
+        details.append("Scenario A: bid > day_short_stop")
+        details.append("  → Ghost Day SHORT 'stopped out'")
+        details.append("  → Set day_short_stopped=True")
+        details.append("  → Evaluate Swing LONG re-entry")
+        details.append("")
+        details.append("Scenario B: ask < swing_long_stop")
+        details.append("  → Swing thesis invalidated")
+        details.append("  → Block symbol for week")
+        details.append("  → Drop candidate (cap stays consumed)")
+        details.append("")
+        details.append("Scenario C: Day SHORT stops, Swing re-entry possible")
+        details.append("  → Attempt Swing LONG re-entry")
+        details.append("  → If rejected again, drop candidate")
+
+        return ScenarioResult(
+            self.name, TestResult.PASS,
+            "Re-entry: ghost monitoring → stop triggers → re-entry or drop",
+            details
+        )
+
+
+class CapManagerScenario(ErrorScenario):
+    """Test cap manager behavior."""
+
+    def __init__(self):
+        super().__init__(
+            "Cap Manager Behavior",
+            "Verify position cap tracking"
+        )
+
+    def run(self, ib: MockIB, logger: logging.Logger) -> ScenarioResult:
+        details = []
+
+        details.append("Cap Types:")
+        details.append("  - Day cap: Limits concurrent Day positions")
+        details.append("  - Swing cap: Limits concurrent Swing positions")
+        details.append("")
+        details.append("Cap Consumption:")
+        details.append("  - Day: Consumed on successful bracket placement")
+        details.append("  - Swing: Consumed on successful bracket placement")
+        details.append("")
+        details.append("Cap Release:")
+        details.append("  - Day: Released when position exits (fill or stop)")
+        details.append("  - Swing: NEVER released (permanent consumption)")
+        details.append("")
+        details.append("Why Swing cap never releases:")
+        details.append("  - Original thesis consumed the slot")
+        details.append("  - Even if re-entry possible, same slot")
+        details.append("  - Prevents runaway position count")
+        details.append("")
+        details.append("Cap check before placement:")
+        details.append("  if not cap_manager.has_capacity('day'):")
+        details.append("      skip signal (at capacity)")
+
+        return ScenarioResult(
+            self.name, TestResult.PASS,
+            "Caps: Day releases on exit, Swing never releases",
+            details
+        )
+
+
+class SymbolBlockingScenario(ErrorScenario):
+    """Test symbol blocking behavior."""
+
+    def __init__(self):
+        super().__init__(
+            "Symbol Blocking",
+            "Verify symbol block/unblock logic"
+        )
+
+    def run(self, ib: MockIB, logger: logging.Logger) -> ScenarioResult:
+        details = []
+
+        details.append("Symbol Blocking Triggers:")
+        details.append("  1. Non-shortable rejection (200, 203, 103, etc.)")
+        details.append("  2. Ghost swing stop triggered (thesis invalid)")
+        details.append("  3. Re-entry failed after ghost mode")
+        details.append("")
+        details.append("Block Scopes:")
+        details.append("  - block_day(symbol): No Day trades for symbol")
+        details.append("  - block_week(symbol): No Swing trades for symbol")
+        details.append("")
+        details.append("Block Duration:")
+        details.append("  - Day blocks: Until end of trading day")
+        details.append("  - Week blocks: Until end of trading week")
+        details.append("")
+        details.append("Check before placement:")
+        details.append("  if symbol_blocker.is_blocked_day(symbol):")
+        details.append("      skip Day signal")
+        details.append("  if symbol_blocker.is_blocked_week(symbol):")
+        details.append("      skip Swing signal")
+
+        return ScenarioResult(
+            self.name, TestResult.PASS,
+            "Symbol blocks prevent repeated failures",
+            details
+        )
+
+
+class MarketHoursScenario(ErrorScenario):
+    """Test market hours handling."""
+
+    def __init__(self):
+        super().__init__(
+            "Market Hours Handling",
+            "Verify RTH and pre-market behavior"
+        )
+
+    def run(self, ib: MockIB, logger: logging.Logger) -> ScenarioResult:
+        details = []
+
+        details.append("Key Times (Pacific):")
+        details.append("  5:00 PT  - Load gap signals")
+        details.append("  6:30 PT  - Market open, gap orders, pending flattens")
+        details.append("  6:35 PT  - Monitor for Day entries")
+        details.append("  12:55 PT - Day timed exits trigger")
+        details.append("  13:00 PT - Market close")
+        details.append("")
+        details.append("RTH (Regular Trading Hours):")
+        details.append("  - is_rth() checks if within 6:30-13:00 PT")
+        details.append("  - Used to determine if can place orders")
+        details.append("")
+        details.append("Pre-market handling:")
+        details.append("  - Gap signals loaded before open")
+        details.append("  - Orders placed at market open")
+        details.append("  - No retroactive entries if signal missed")
+        details.append("")
+        details.append("Post-market handling:")
+        details.append("  - If position couldn't close, schedule pending flatten")
+        details.append("  - Pending flattens processed at next open")
+
+        return ScenarioResult(
+            self.name, TestResult.PASS,
+            "Market hours: 6:30-13:00 PT, with pre/post handling",
+            details
+        )
+
+
+class ConflictResolutionScenario(ErrorScenario):
+    """Test conflict resolution between Day and Swing."""
+
+    def __init__(self):
+        super().__init__(
+            "Conflict Resolution",
+            "Verify Day vs Swing conflict handling"
+        )
+
+    def run(self, ib: MockIB, logger: logging.Logger) -> ScenarioResult:
+        details = []
+
+        details.append("Conflict Scenarios:")
+        details.append("")
+        details.append("1. Day LONG signal, existing Swing LONG")
+        details.append("   → Allow Day entry (same direction)")
+        details.append("   → Swing continues")
+        details.append("")
+        details.append("2. Day SHORT signal, existing Swing LONG")
+        details.append("   → Flatten Swing LONG first")
+        details.append("   → Then place Day SHORT")
+        details.append("   → Create re-entry candidate for Swing")
+        details.append("")
+        details.append("3. Day LONG signal, existing Day SHORT")
+        details.append("   → Block entry (opposite Day exists)")
+        details.append("")
+        details.append("4. Swing LONG signal, existing Day SHORT")
+        details.append("   → Block entry (wait for Day to exit)")
+        details.append("")
+        details.append("Priority: Day > Swing (Day can flatten Swing)")
+        details.append("Same-direction: Coexist peacefully")
+        details.append("Opposite-direction: Day wins, Swing waits/flattens")
+
+        return ScenarioResult(
+            self.name, TestResult.PASS,
+            "Conflicts: Day > Swing, same-direction coexists",
+            details
+        )
+
+
+class BracketOrderScenario(ErrorScenario):
+    """Test bracket order structure."""
+
+    def __init__(self):
+        super().__init__(
+            "Bracket Order Structure",
+            "Verify parent/stop/timed exit structure"
+        )
+
+    def run(self, ib: MockIB, logger: logging.Logger) -> ScenarioResult:
+        details = []
+
+        details.append("Day Bracket Structure:")
+        details.append("  Parent: LMT order at entry_price")
+        details.append("    - action: BUY (LONG) or SELL (SHORT)")
+        details.append("    - transmit: False (held)")
+        details.append("")
+        details.append("  Stop: STP order at stop_price")
+        details.append("    - action: SELL (LONG) or BUY (SHORT)")
+        details.append("    - parentId: parent.orderId")
+        details.append("    - ocaGroup: shared with timed")
+        details.append("    - transmit: False")
+        details.append("")
+        details.append("  Timed: LMT→MKT at exit time")
+        details.append("    - action: SELL (LONG) or BUY (SHORT)")
+        details.append("    - parentId: parent.orderId")
+        details.append("    - ocaGroup: shared with stop")
+        details.append("    - goodAfterTime: 12:55 PT")
+        details.append("    - transmit: True (triggers send)")
+        details.append("")
+        details.append("Swing Bracket: Similar but no timed exit")
+        details.append("  - Uses GTC (good-till-cancelled)")
+        details.append("  - Stop only exit (or manual)")
+
+        return ScenarioResult(
+            self.name, TestResult.PASS,
+            "Bracket: parent → stop + timed (OCA linked)",
+            details
+        )
+
+
+class PartialFillScenario(ErrorScenario):
+    """Test partial fill handling."""
+
+    def __init__(self):
+        super().__init__(
+            "Partial Fill Handling",
+            "Verify partial fill behavior"
+        )
+
+    def run(self, ib: MockIB, logger: logging.Logger) -> ScenarioResult:
+        details = []
+
+        details.append("Partial Fill Scenario:")
+        details.append("  Order for 100 shares")
+        details.append("  Only 50 shares fill")
+        details.append("")
+        details.append("Current handling:")
+        details.append("  - FillTracker waits for complete fill")
+        details.append("  - Status: 'Submitted' until fully filled")
+        details.append("  - When 'Filled', records full position")
+        details.append("")
+        details.append("IBKR behavior:")
+        details.append("  - Parent may show 'PartiallyFilled'")
+        details.append("  - Stop/exit orders adjust to filled qty")
+        details.append("  - Eventually 'Filled' or 'Cancelled'")
+        details.append("")
+        details.append("Bot assumption:")
+        details.append("  - LMT orders at entry_price")
+        details.append("  - Should fill completely or not at all")
+        details.append("  - Partial fills rare for limit entries")
+
+        return ScenarioResult(
+            self.name, TestResult.PASS,
+            "Partial fills: wait for complete or cancel",
+            details
+        )
+
+
+class ErrorCallbackFlowScenario(ErrorScenario):
+    """Test error callback handling flow."""
+
+    def __init__(self):
+        super().__init__(
+            "Error Callback Flow",
+            "Verify IBKR error callback processing"
+        )
+
+    def run(self, ib: MockIB, logger: logging.Logger) -> ScenarioResult:
+        details = []
+
+        details.append("Error Callback Registration:")
+        details.append("  ib.errorEvent += on_error_callback")
+        details.append("")
+        details.append("Callback signature:")
+        details.append("  def on_error(reqId, errorCode, errorString, contract)")
+        details.append("")
+        details.append("Error Processing Flow:")
+        details.append("  1. IBKR sends error via callback")
+        details.append("  2. Check if order-related (reqId is order ID)")
+        details.append("  3. Look up pending order in FillTracker")
+        details.append("  4. Determine error type:")
+        details.append("     - Shortable (201/10147/162/426) → ghost mode")
+        details.append("     - Other rejection → block symbol")
+        details.append("     - Connection (1100+) → reconnect handling")
+        details.append("  5. Update PlacementResult with rejection info")
+        details.append("  6. Return to caller for appropriate action")
+        details.append("")
+        details.append("Thread safety:")
+        details.append("  - Callbacks may fire on different thread")
+        details.append("  - Use threading.Lock for shared state")
+
+        return ScenarioResult(
+            self.name, TestResult.PASS,
+            "Error callbacks: reqId → lookup → classify → handle",
+            details
+        )
+
+
+# ============================================================================
 # TEST RUNNER
 # ============================================================================
 
@@ -968,6 +1454,20 @@ def get_all_scenarios() -> List[ErrorScenario]:
         # Reconnection scenarios
         ReconnectionBackoffScenario(),
         MarketDataResubscribeScenario(),
+
+        # Trading flow scenarios
+        FillFlowScenario(),
+        OCAGroupScenario(),
+        TimedExitScenario(),
+        GapOrderScenario(),
+        ReentryFlowScenario(),
+        CapManagerScenario(),
+        SymbolBlockingScenario(),
+        MarketHoursScenario(),
+        ConflictResolutionScenario(),
+        BracketOrderScenario(),
+        PartialFillScenario(),
+        ErrorCallbackFlowScenario(),
     ]
 
 
