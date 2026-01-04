@@ -58,6 +58,13 @@ class ReentryCandidate:
     Multiple Day trades can block the same re-entry candidate:
     - The original Day trade that caused the flatten
     - Any subsequent opposite-side Day trades on the same symbol
+
+    Ghost Mode:
+    When a Day SHORT is rejected due to "no shortable shares", the candidate
+    enters ghost mode. In this mode, price is monitored as if the Day SHORT
+    was live:
+    - Price crosses above day_short_stop → evaluate re-entry (ghost "stopped out")
+    - Price crosses below swing_long_stop → block symbol, drop candidate (thesis invalid)
     """
     candidate_id: str  # Unique ID for this candidate
     symbol: str
@@ -70,8 +77,13 @@ class ReentryCandidate:
     blocking_day_orders: List[int] = field(default_factory=list)  # All Day orders blocking this re-entry
     created_at: str = ""  # ISO format datetime
     flatten_reason: str = "day_conflict"
-    status: str = "pending"  # pending, linked, dropped, filled
+    status: str = "pending"  # pending, linked, ghost, dropped, filled
     drop_reason: Optional[str] = None
+
+    # Ghost mode fields - used when Day SHORT rejected due to no shortable shares
+    ghost_mode: bool = False
+    day_short_stop: Optional[float] = None   # Cross above → re-entry trigger
+    swing_long_stop: Optional[float] = None  # Cross below → block & drop
 
     def __post_init__(self):
         if not self.created_at:
@@ -179,12 +191,11 @@ class ReentryManager:
             status="pending",
         )
 
-        # Reserve a swing slot FIRST (before saving candidate)
-        # This ensures if there's a crash, we don't have a candidate without a slot
-        today = now_pt().date()
-        self.state_mgr.reserve_swing_slot(today)
+        # NOTE: We do NOT reserve a new swing slot here.
+        # The swing cap was already consumed when the position originally filled.
+        # Flattening for Day conflict does NOT release the cap - it stays "used"
+        # for the week regardless of whether re-entry succeeds or fails.
 
-        # Now save the candidate (slot is already reserved)
         self.candidates[candidate_id] = candidate
         self._save_candidates()
 
@@ -238,9 +249,15 @@ class ReentryManager:
 
     def drop_candidate(self, candidate_id: str, reason: str) -> None:
         """
-        Drop a candidate and release its reserved slot.
+        Drop a candidate permanently.
 
-        Called when flatten fails or other error before Day bracket is placed.
+        Called when:
+        - Flatten fails or other error before Day bracket is placed
+        - Day SHORT rejected (non-shortable error)
+        - Ghost mode: price falls below swing_long_stop
+
+        NOTE: The swing cap is NOT released. Once consumed, it stays used
+        for the week regardless of re-entry success/failure.
         """
         if candidate_id not in self.candidates:
             self.logger.warning(
@@ -252,9 +269,7 @@ class ReentryManager:
         candidate.status = "dropped"
         candidate.drop_reason = reason
 
-        # Release the reserved slot
-        today = now_pt().date()
-        self.state_mgr.release_swing_slot(today)
+        # NOTE: We do NOT release the swing slot - cap stays consumed for week
 
         # Clean up day_order_to_candidates mapping to prevent memory leak
         for day_order_id in candidate.blocking_day_orders:
@@ -326,6 +341,130 @@ class ReentryManager:
                         self.day_order_to_candidates[day_parent_order_id].append(candidate.candidate_id)
 
         self._save_candidates()
+
+    def enable_ghost_mode(
+        self,
+        candidate_id: str,
+        day_short_stop: float,
+        swing_long_stop: float,
+    ) -> bool:
+        """
+        Enable ghost trade monitoring for a candidate.
+
+        Called when Day SHORT is rejected due to "no shortable shares" (codes 201, 10147, 162).
+        The candidate enters ghost mode where price is monitored as if the Day SHORT was live:
+        - Price crosses above day_short_stop → ghost "stopped out", evaluate re-entry
+        - Price crosses below swing_long_stop → trade thesis invalid, block symbol & drop
+
+        Args:
+            candidate_id: The re-entry candidate to enable ghost mode for
+            day_short_stop: The Day SHORT's stop price (trigger for re-entry)
+            swing_long_stop: The Swing LONG's stop price (trigger for block/drop)
+
+        Returns:
+            True if ghost mode enabled, False if candidate not found
+        """
+        if candidate_id not in self.candidates:
+            self.logger.warning(
+                "[REENTRY][GHOST] Cannot enable ghost mode - candidate %s not found.",
+                candidate_id,
+            )
+            return False
+
+        candidate = self.candidates[candidate_id]
+        candidate.ghost_mode = True
+        candidate.day_short_stop = day_short_stop
+        candidate.swing_long_stop = swing_long_stop
+        candidate.status = "ghost"
+
+        self._save_candidates()
+
+        self.logger.info(
+            "[REENTRY][GHOST] Enabled ghost mode for %s (%s): day_short_stop=%.2f, swing_long_stop=%.2f",
+            candidate_id,
+            candidate.symbol,
+            day_short_stop,
+            swing_long_stop,
+        )
+
+        return True
+
+    def get_ghost_candidates(self) -> List[ReentryCandidate]:
+        """
+        Get all candidates in ghost mode for price monitoring.
+
+        Returns:
+            List of ReentryCandidate objects with ghost_mode=True
+        """
+        return [c for c in self.candidates.values() if c.ghost_mode and c.status == "ghost"]
+
+    def on_ghost_day_stop_triggered(self, candidate_id: str) -> None:
+        """
+        Called when price crosses above the ghost Day SHORT's stop price.
+
+        This means the ghost Day SHORT "would have been stopped out", so
+        the Swing LONG can be re-entered.
+        """
+        candidate = self.candidates.get(candidate_id)
+        if candidate is None:
+            self.logger.warning(
+                "[REENTRY][GHOST] Cannot trigger - candidate %s not found.", candidate_id
+            )
+            return
+
+        if not candidate.ghost_mode or candidate.status != "ghost":
+            self.logger.warning(
+                "[REENTRY][GHOST] Cannot trigger - candidate %s not in ghost mode.", candidate_id
+            )
+            return
+
+        self.logger.info(
+            "[REENTRY][GHOST] Day SHORT ghost stop triggered for %s (%s) - evaluating re-entry",
+            candidate_id,
+            candidate.symbol,
+        )
+
+        # Disable ghost mode and move to linked status for evaluation
+        candidate.ghost_mode = False
+        candidate.status = "linked"  # Ready for normal re-entry evaluation
+        self._save_candidates()
+
+        # Evaluate re-entry immediately
+        self._evaluate_and_execute(candidate)
+
+    def on_ghost_swing_stop_triggered(self, candidate_id: str) -> None:
+        """
+        Called when price crosses below the ghost Swing LONG's stop price.
+
+        This means the Swing LONG trade thesis is invalidated.
+        Block the symbol for the week and drop the candidate.
+        """
+        candidate = self.candidates.get(candidate_id)
+        if candidate is None:
+            self.logger.warning(
+                "[REENTRY][GHOST] Cannot trigger - candidate %s not found.", candidate_id
+            )
+            return
+
+        if not candidate.ghost_mode or candidate.status != "ghost":
+            self.logger.warning(
+                "[REENTRY][GHOST] Cannot trigger - candidate %s not in ghost mode.", candidate_id
+            )
+            return
+
+        today = now_pt().date()
+
+        self.logger.info(
+            "[REENTRY][GHOST] Swing LONG ghost stop triggered for %s (%s) - blocking symbol for week",
+            candidate_id,
+            candidate.symbol,
+        )
+
+        # Block symbol for the week
+        self.state_mgr.blocked.block_for_week(candidate.symbol, candidate.strategy_id, today)
+
+        # Drop the candidate
+        self.drop_candidate(candidate_id, "ghost_swing_stop_triggered")
 
     def on_day_trade_exit(self, day_parent_order_id: int) -> None:
         """
@@ -424,9 +563,9 @@ class ReentryManager:
         """
         today = now_pt().date()
 
-        # Find candidates that need re-evaluation
+        # Find candidates that need re-evaluation (including ghost candidates)
         for candidate in list(self.candidates.values()):
-            if candidate.status not in ("pending", "linked"):
+            if candidate.status not in ("pending", "linked", "ghost"):
                 continue
 
             # Check if original timed exit date has passed
@@ -440,8 +579,7 @@ class ReentryManager:
                 )
                 candidate.status = "dropped"
                 candidate.drop_reason = "expired_past_exit_date"
-                # Release the reserved slot since candidate is dropped
-                self.state_mgr.release_swing_slot(today)
+                # NOTE: Cap NOT released - stays consumed for week
                 self._cleanup_candidate(candidate)
                 self._save_candidates()
                 continue
@@ -459,13 +597,13 @@ class ReentryManager:
         """
         Called by FillTracker when a re-entry order fills.
 
-        Converts the reserved slot to an open position.
+        NOTE: No cap adjustment needed - the swing cap was already consumed
+        when the position originally filled. Re-entry just resumes the position.
         """
         self.logger.info(
-            "[REENTRY] Re-entry order %d filled, converting reserved slot to open",
+            "[REENTRY] Re-entry order %d filled - position resumed (cap already consumed)",
             order_id,
         )
-        self.state_mgr.convert_reserved_to_open(trade_date)
 
     def evaluate_eod_candidates(self) -> None:
         """
@@ -531,8 +669,7 @@ class ReentryManager:
                 )
                 candidate.status = "dropped"
                 candidate.drop_reason = block_reason
-                # Release the reserved slot since candidate is dropped
-                self.state_mgr.release_swing_slot(today)
+                # NOTE: Cap NOT released - stays consumed for week
                 self._cleanup_candidate(candidate)
                 self._save_candidates()
                 return False
@@ -548,8 +685,7 @@ class ReentryManager:
                     )
                     candidate.status = "dropped"
                     candidate.drop_reason = "past_weekly_cutoff"
-                    # Release the reserved slot since candidate is dropped
-                    self.state_mgr.release_swing_slot(today)
+                    # NOTE: Cap NOT released - stays consumed for week
                     self._cleanup_candidate(candidate)
                     self._save_candidates()
                     return False
@@ -564,8 +700,7 @@ class ReentryManager:
                 )
                 candidate.status = "dropped"
                 candidate.drop_reason = "past_exit_date"
-                # Release the reserved slot since candidate is dropped
-                self.state_mgr.release_swing_slot(today)
+                # NOTE: Cap NOT released - stays consumed for week
                 self._cleanup_candidate(candidate)
                 self._save_candidates()
                 return False
@@ -579,8 +714,7 @@ class ReentryManager:
                 )
                 candidate.status = "dropped"
                 candidate.drop_reason = "mid_price_unavailable"
-                # Release the reserved slot since candidate is dropped
-                self.state_mgr.release_swing_slot(today)
+                # NOTE: Cap NOT released - stays consumed for week
                 self._cleanup_candidate(candidate)
                 self._save_candidates()
                 return False
@@ -595,24 +729,22 @@ class ReentryManager:
                 )
                 candidate.status = "dropped"
                 candidate.drop_reason = f"price_below_stop (mid={mid_price:.2f} < stop={candidate.original_stop:.2f})"
-                # Release the reserved slot since candidate is dropped
-                self.state_mgr.release_swing_slot(today)
+                # NOTE: Cap NOT released - stays consumed for week
                 self._cleanup_candidate(candidate)
                 self._save_candidates()
                 return False
 
-            # Check global SwingOpen capacity only (should not fail with reserved slots)
+            # Check global SwingOpen capacity (cap should already be consumed from original fill)
             can_open, reason = self._can_reentry_swing()
             if not can_open:
                 self.logger.warning(
-                    "[REENTRY][FAIL] %s - capacity blocked: %s (reserved slot should have prevented this), dropping candidate.",
+                    "[REENTRY][FAIL] %s - capacity blocked: %s, dropping candidate.",
                     candidate.symbol,
                     reason,
                 )
                 candidate.status = "dropped"
                 candidate.drop_reason = f"capacity_blocked ({reason})"
-                # Release the reserved slot since candidate is dropped
-                self.state_mgr.release_swing_slot(today)
+                # NOTE: Cap NOT released - stays consumed for week
                 self._cleanup_candidate(candidate)
                 self._save_candidates()
                 return False
@@ -637,8 +769,7 @@ class ReentryManager:
                 )
                 candidate.status = "dropped"
                 candidate.drop_reason = "execution_failed"
-                # Release the reserved slot since candidate is dropped
-                self.state_mgr.release_swing_slot(now_pt().date())
+                # NOTE: Cap NOT released - stays consumed for week
                 self._cleanup_candidate(candidate)
 
             self._save_candidates()
@@ -734,9 +865,7 @@ class ReentryManager:
                     stop_order_id=stop_id,
                     timed_order_id=timed_id,
                 )
-                # Register for slot conversion when order fills
-                # (This ensures convert_reserved_to_open is only called on fill, not placement)
-                self.fill_tracker.register_pending_reentry_conversion(parent_id, trade_date)
+                # NOTE: No slot conversion needed - cap already consumed from original fill
 
             return True
 
@@ -750,15 +879,16 @@ class ReentryManager:
 
     def _can_reentry_swing(self) -> tuple:
         """
-        Check if re-entry is allowed using its reserved slot.
+        Check if re-entry is allowed.
 
-        Re-entry uses RESERVED slots (not available slots).
-        The slot was already reserved when the candidate was created.
+        Re-entry should always be allowed because the swing cap was already
+        consumed when the original position filled. We're just resuming
+        a position that was temporarily flattened.
 
-        Returns (True, None) if allowed, (False, reason) if blocked.
+        Returns (True, None) - always allowed since cap already consumed.
         """
-        today = now_pt().date()
-        return self.state_mgr.can_reentry_swing(today)
+        # Cap was consumed from original fill, re-entry doesn't need new capacity
+        return (True, None)
 
     def _get_mid_price(self, symbol: str) -> Optional[float]:
         """
@@ -857,52 +987,11 @@ class ReentryManager:
                 "[REENTRY] Loaded %d candidates from state.", len(self.candidates)
             )
 
-            # Verify slot reservation counts match active candidates
-            self._sync_slot_reservations()
+            # NOTE: No slot reservation sync needed - caps stay consumed from original fills
 
         except Exception as exc:
             self.logger.warning(
                 "[REENTRY] Failed to load candidates from state: %s", exc
-            )
-
-    def _sync_slot_reservations(self) -> None:
-        """
-        Sync SwingReserved slot counts with actual active candidates.
-
-        This handles crash recovery where slots and candidates may be out of sync.
-        """
-        today = now_pt().date()
-
-        # Count active candidates (pending or linked status)
-        active_count = sum(
-            1 for c in self.candidates.values()
-            if c.status in ("pending", "linked")
-        )
-
-        # Get current reserved count from state
-        current_reserved = self.state_mgr.get_swing_reserved(today)
-
-        if active_count != current_reserved:
-            self.logger.warning(
-                "[REENTRY] Slot reservation mismatch detected: active_candidates=%d, reserved_slots=%d. Syncing...",
-                active_count,
-                current_reserved,
-            )
-
-            # Adjust the reserved count to match active candidates
-            diff = active_count - current_reserved
-            if diff > 0:
-                # Need to reserve more slots
-                for _ in range(diff):
-                    self.state_mgr.reserve_swing_slot(today)
-            elif diff < 0:
-                # Need to release slots
-                for _ in range(-diff):
-                    self.state_mgr.release_swing_slot(today)
-
-            self.logger.info(
-                "[REENTRY] Slot reservations synced. Now reserved=%d",
-                self.state_mgr.get_swing_reserved(today),
             )
 
     def _save_candidates(self) -> None:
@@ -922,8 +1011,8 @@ class ReentryManager:
             # Update reentry_candidates section
             candidates_data = {}
             for cid, candidate in self.candidates.items():
-                # Only persist active candidates
-                if candidate.status in ("pending", "linked"):
+                # Only persist active candidates (including ghost mode)
+                if candidate.status in ("pending", "linked", "ghost"):
                     candidates_data[cid] = asdict(candidate)
 
             data["reentry_candidates"] = candidates_data

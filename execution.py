@@ -18,9 +18,37 @@ from __future__ import annotations
 
 import logging
 import time
+import threading
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Tuple, Optional
 
 from ib_insync import IB, Trade, Order
+
+
+# IBKR error codes indicating "no shortable shares available"
+SHORTABLE_ERROR_CODES = {201, 10147, 162}
+
+
+@dataclass
+class PlacementResult:
+    """
+    Result of a bracket order placement attempt.
+
+    Attributes:
+        order_id: Parent order ID if successful, None otherwise
+        success: True if order was accepted by IBKR
+        rejection_code: IBKR error code if rejected
+        rejection_message: IBKR error message if rejected
+    """
+    order_id: Optional[int] = None
+    success: bool = False
+    rejection_code: Optional[int] = None
+    rejection_message: Optional[str] = None
+
+    @property
+    def is_shortable_rejection(self) -> bool:
+        """Check if rejection was due to no shortable shares."""
+        return self.rejection_code in SHORTABLE_ERROR_CODES
 
 from orders import build_day_bracket, build_swing_bracket, link_bracket
 from time_utils import now_pt, is_rth
@@ -67,6 +95,42 @@ class OrderExecutor:
         self.state_mgr = state_mgr
         self.cap_manager = cap_manager
         self.fill_tracker = fill_tracker
+
+        # Error tracking for order rejections
+        self._error_lock = threading.Lock()
+        self._last_error_code: Optional[int] = None
+        self._last_error_message: Optional[str] = None
+        self._last_error_order_id: Optional[int] = None
+
+        # Subscribe to IBKR error events
+        self.ib.errorEvent += self._on_error
+
+    def _on_error(self, reqId: int, errorCode: int, errorString: str, contract) -> None:
+        """
+        Handle IBKR error events.
+
+        Captures error code and message for order rejections.
+        """
+        with self._error_lock:
+            self._last_error_order_id = reqId
+            self._last_error_code = errorCode
+            self._last_error_message = errorString
+
+        # Log all errors for visibility
+        self.logger.warning(
+            "[EXEC] IBKR error: reqId=%s code=%s msg=%s",
+            reqId, errorCode, errorString
+        )
+
+    def _get_last_error(self) -> Tuple[Optional[int], Optional[str]]:
+        """Get and clear the last error."""
+        with self._error_lock:
+            code = self._last_error_code
+            msg = self._last_error_message
+            self._last_error_code = None
+            self._last_error_message = None
+            self._last_error_order_id = None
+            return code, msg
 
     def _get_next_order_id(self) -> int:
         """
@@ -167,12 +231,12 @@ class OrderExecutor:
             )
             return None, None, None
 
-    def place_day_bracket(self, sig: "DaySignal") -> Optional[int]:
+    def place_day_bracket(self, sig: "DaySignal") -> PlacementResult:
         """
         Build and place a Day bracket order for the given signal.
 
         Returns:
-            Parent order ID on success, None on failure.
+            PlacementResult with order_id on success, rejection info on failure.
         """
         tag = f"DAY_{sig.symbol}_{sig.strategy_id}"
         direction = (sig.direction or "LONG").upper()
@@ -185,6 +249,9 @@ class OrderExecutor:
             sig.stop_price,
             sig.shares,
         )
+
+        # Clear any previous error before placement
+        self._get_last_error()
 
         # Build the bracket (handles LONG/SHORT direction automatically)
         bracket = build_day_bracket(sig, sig.trade_date)
@@ -201,8 +268,18 @@ class OrderExecutor:
         )
 
         if parent_trade is None:
-            self.logger.error("[EXEC][%s] Bracket placement failed.", tag)
-            return None
+            # Capture rejection info
+            error_code, error_msg = self._get_last_error()
+            self.logger.error(
+                "[EXEC][%s] Bracket placement failed. code=%s msg=%s",
+                tag, error_code, error_msg
+            )
+            return PlacementResult(
+                order_id=None,
+                success=False,
+                rejection_code=error_code,
+                rejection_message=error_msg,
+            )
 
         parent_order_id = bracket.parent.orderId
 
@@ -226,7 +303,12 @@ class OrderExecutor:
         self.logger.info(
             "[EXEC][%s] Day bracket placed successfully.", tag
         )
-        return parent_order_id
+        return PlacementResult(
+            order_id=parent_order_id,
+            success=True,
+            rejection_code=None,
+            rejection_message=None,
+        )
 
     def place_swing_bracket(self, sig: "SwingSignal") -> bool:
         """

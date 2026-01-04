@@ -11,7 +11,7 @@ from ib_insync import IB, Ticker, Stock, Contract
 from time_utils import now_pt, is_rth, today_pt_date_str
 from state_manager import StateManager
 from signals import DaySignal, SwingSignal
-from execution import OrderExecutor
+from execution import OrderExecutor, PlacementResult
 from conflict_resolver import ConflictResolver
 from typing import TYPE_CHECKING
 
@@ -620,6 +620,56 @@ class StrategyEngine:
             if not rt.triggered:
                 self._evaluate_swing(rt, bid, ask)
 
+        # Evaluate ghost trade candidates for this symbol
+        self._evaluate_ghost_candidates(symbol, bid, ask)
+
+    def _evaluate_ghost_candidates(
+        self, symbol: str, bid: Optional[float], ask: Optional[float]
+    ) -> None:
+        """
+        Evaluate ghost trade candidates for price triggers.
+
+        Ghost candidates are re-entry candidates where the Day SHORT was rejected
+        due to "no shortable shares". We monitor price as if the Day SHORT was live:
+        - Price crosses above day_short_stop → evaluate re-entry (ghost "stopped out")
+        - Price crosses below swing_long_stop → block symbol for week, drop candidate
+        """
+        if self.reentry_manager is None:
+            return
+
+        # Get all ghost candidates for this symbol
+        ghost_candidates = [
+            c for c in self.reentry_manager.get_ghost_candidates()
+            if c.symbol.upper() == symbol.upper()
+        ]
+
+        if not ghost_candidates:
+            return
+
+        for candidate in ghost_candidates:
+            # Use appropriate price based on direction
+            # For Day SHORT ghost: we care if price goes UP (bid)
+            # For Swing LONG stop: we care if price goes DOWN (ask or bid)
+
+            if bid is not None and candidate.day_short_stop is not None:
+                # Check if price crossed above day_short_stop (ghost Day SHORT "stopped out")
+                if bid > candidate.day_short_stop:
+                    self.logger.info(
+                        "[GHOST] %s bid=%.2f > day_short_stop=%.2f - triggering re-entry evaluation",
+                        symbol, bid, candidate.day_short_stop,
+                    )
+                    self.reentry_manager.on_ghost_day_stop_triggered(candidate.candidate_id)
+                    continue  # Don't check swing stop if we already triggered day stop
+
+            if ask is not None and candidate.swing_long_stop is not None:
+                # Check if price crossed below swing_long_stop (Swing LONG thesis invalidated)
+                if ask < candidate.swing_long_stop:
+                    self.logger.info(
+                        "[GHOST] %s ask=%.2f < swing_long_stop=%.2f - blocking symbol and dropping candidate",
+                        symbol, ask, candidate.swing_long_stop,
+                    )
+                    self.reentry_manager.on_ghost_swing_stop_triggered(candidate.candidate_id)
+
     def _trigger_eod_save(self, today: date) -> None:
         """Trigger EOD prev_close save and pending re-entry evaluations (once per day)."""
         if self._eod_save_date == today:
@@ -752,43 +802,67 @@ class StrategyEngine:
                 today, sig.symbol, sig.strategy_id, "DAY", filled=True
             )
 
-            day_order_id = self.executor.place_day_bracket(sig)
+            result: PlacementResult = self.executor.place_day_bracket(sig)
 
-            if day_order_id is not None and self.reentry_manager is not None:
+            if result.success and self.reentry_manager is not None:
                 # Link re-entry candidates to the Day trade order ID
                 for candidate_id in reentry_candidate_ids:
-                    self.reentry_manager.link_day_trade(candidate_id, day_order_id)
+                    self.reentry_manager.link_day_trade(candidate_id, result.order_id)
 
                 # Add this Day trade as a blocker for any OTHER pending re-entry candidates
                 # on the same symbol (handles case where new Day trade opens while waiting)
                 self.reentry_manager.add_blocker_for_symbol(
-                    sig.symbol, day_order_id, sig.direction
+                    sig.symbol, result.order_id, sig.direction
                 )
-            elif day_order_id is None:
+            elif not result.success:
                 # Day bracket placement failed - unmark signal
                 self.state_mgr.signal_cache.mark_signal_filled(
                     today, sig.symbol, sig.strategy_id, "DAY", filled=False
                 )
 
-                # Drop orphaned re-entry candidates
-                if reentry_candidate_ids and self.reentry_manager is not None:
+                # Handle rejection based on reason
+                if result.is_shortable_rejection and reentry_candidate_ids and self.reentry_manager is not None:
+                    # Shortable rejection (codes 201, 10147, 162) - enable ghost mode
+                    self.logger.warning(
+                        "[TRIG][DAY][SHORT][GHOST] %s %s - no shortable shares (code=%s), enabling ghost mode",
+                        sig.symbol,
+                        sig.strategy_id,
+                        result.rejection_code,
+                    )
                     for candidate_id in reentry_candidate_ids:
                         try:
-                            self.reentry_manager.drop_candidate(candidate_id, "day_bracket_failed")
+                            # Enable ghost mode with both stop prices
+                            self.reentry_manager.enable_ghost_mode(
+                                candidate_id,
+                                day_short_stop=float(sig.stop_price),
+                                swing_long_stop=float(self._get_swing_stop_for_candidate(candidate_id)),
+                            )
                         except Exception as exc:
                             self.logger.error(
-                                "[TRIG][DAY][SHORT] Failed to drop candidate %s: %s",
+                                "[TRIG][DAY][SHORT] Failed to enable ghost mode for %s: %s",
                                 candidate_id, exc
                             )
+                else:
+                    # Other rejection - block symbol and drop candidates immediately
+                    if reentry_candidate_ids and self.reentry_manager is not None:
+                        for candidate_id in reentry_candidate_ids:
+                            try:
+                                self.reentry_manager.drop_candidate(candidate_id, f"day_bracket_failed (code={result.rejection_code})")
+                            except Exception as exc:
+                                self.logger.error(
+                                    "[TRIG][DAY][SHORT] Failed to drop candidate %s: %s",
+                                    candidate_id, exc
+                                )
 
-                # Block symbol+strategy for rest of week (swing re-entry) and day (day entry)
-                self.state_mgr.blocked.block_for_week(sig.symbol, sig.strategy_id, today)
-                self.state_mgr.blocked.block_for_day(sig.symbol, sig.strategy_id, today)
-                self.logger.warning(
-                    "[TRIG][DAY][SHORT][BLOCKED] %s %s - bracket failed, blocked for week and day",
-                    sig.symbol,
-                    sig.strategy_id,
-                )
+                    # Block symbol+strategy for rest of week (swing re-entry) and day (day entry)
+                    self.state_mgr.blocked.block_for_week(sig.symbol, sig.strategy_id, today)
+                    self.state_mgr.blocked.block_for_day(sig.symbol, sig.strategy_id, today)
+                    self.logger.warning(
+                        "[TRIG][DAY][SHORT][BLOCKED] %s %s - bracket failed (code=%s), blocked for week and day",
+                        sig.symbol,
+                        sig.strategy_id,
+                        result.rejection_code,
+                    )
 
             rt.triggered = True
             rt.triggered_date = today
@@ -880,29 +954,30 @@ class StrategyEngine:
                 today, sig.symbol, sig.strategy_id, "DAY", filled=True
             )
 
-            day_order_id = self.executor.place_day_bracket(sig)
+            result: PlacementResult = self.executor.place_day_bracket(sig)
 
-            if day_order_id is not None and self.reentry_manager is not None:
+            if result.success and self.reentry_manager is not None:
                 # Link re-entry candidates to the Day trade order ID
                 for candidate_id in reentry_candidate_ids:
-                    self.reentry_manager.link_day_trade(candidate_id, day_order_id)
+                    self.reentry_manager.link_day_trade(candidate_id, result.order_id)
 
                 # Add this Day trade as a blocker for any OTHER pending re-entry candidates
                 # on the same symbol (handles case where new Day trade opens while waiting)
                 self.reentry_manager.add_blocker_for_symbol(
-                    sig.symbol, day_order_id, sig.direction
+                    sig.symbol, result.order_id, sig.direction
                 )
-            elif day_order_id is None:
+            elif not result.success:
                 # Day bracket placement failed - unmark signal
                 self.state_mgr.signal_cache.mark_signal_filled(
                     today, sig.symbol, sig.strategy_id, "DAY", filled=False
                 )
 
+                # Day LONG failures always block (no ghost mode for LONG trades)
                 # Drop orphaned re-entry candidates
                 if reentry_candidate_ids and self.reentry_manager is not None:
                     for candidate_id in reentry_candidate_ids:
                         try:
-                            self.reentry_manager.drop_candidate(candidate_id, "day_bracket_failed")
+                            self.reentry_manager.drop_candidate(candidate_id, f"day_bracket_failed (code={result.rejection_code})")
                         except Exception as exc:
                             self.logger.error(
                                 "[TRIG][DAY][LONG] Failed to drop candidate %s: %s",
@@ -913,9 +988,10 @@ class StrategyEngine:
                 self.state_mgr.blocked.block_for_week(sig.symbol, sig.strategy_id, today)
                 self.state_mgr.blocked.block_for_day(sig.symbol, sig.strategy_id, today)
                 self.logger.warning(
-                    "[TRIG][DAY][LONG][BLOCKED] %s %s - bracket failed, blocked for week and day",
+                    "[TRIG][DAY][LONG][BLOCKED] %s %s - bracket failed (code=%s), blocked for week and day",
                     sig.symbol,
                     sig.strategy_id,
+                    result.rejection_code,
                 )
 
             rt.triggered = True
@@ -1075,3 +1151,18 @@ class StrategyEngine:
             )
         rt.triggered = True
         rt.triggered_date = trade_date
+
+    def _get_swing_stop_for_candidate(self, candidate_id: str) -> float:
+        """
+        Get the original swing stop price for a re-entry candidate.
+
+        Used when enabling ghost mode to know the swing's stop price.
+        """
+        if self.reentry_manager is None:
+            return 0.0
+
+        candidate = self.reentry_manager.candidates.get(candidate_id)
+        if candidate is None:
+            return 0.0
+
+        return candidate.original_stop
