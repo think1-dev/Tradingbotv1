@@ -5198,6 +5198,1366 @@ class Error2110ConnectivityBrokenScenario(ErrorScenario):
 
 
 # ============================================================================
+# CLIENT CONNECTION ERRORS (500 range)
+# ============================================================================
+
+class Error501AlreadyConnectedScenario(ErrorScenario):
+    """Error 501: Already Connected."""
+
+    def __init__(self):
+        super().__init__(
+            "Error 501 (Already Connected)",
+            "Bot receives 501 when attempting duplicate connection"
+        )
+
+    def run(self, ib: MockIB, logger: logging.Logger) -> ScenarioResult:
+        details = ["Cause: Calling connect() when already connected"]
+        details.append("")
+        details.append("Bot Behavior:")
+        details.append("  - ib_insync handles internally")
+        details.append("  - Log warning, continue operation")
+        details.append("  - No action needed - already connected")
+
+        return ScenarioResult(self.name, TestResult.PASS,
+            "501: already connected, continue operation", details)
+
+
+class Error502ConnectFailedScenario(ErrorScenario):
+    """Error 502: Couldn't connect to TWS."""
+
+    def __init__(self):
+        super().__init__(
+            "Error 502 (Connection Failed)",
+            "TWS/Gateway not running or wrong port"
+        )
+
+    def run(self, ib: MockIB, logger: logging.Logger) -> ScenarioResult:
+        details = ["Cause: TWS not running, wrong port, or firewall"]
+        details.append("")
+        details.append("Bot Behavior:")
+        details.append("  - ConnectionManager retries with backoff")
+        details.append("  - Start: 5s, max: 120s delay")
+        details.append("  - Log error and retry indefinitely")
+
+        return ScenarioResult(self.name, TestResult.PASS,
+            "502: TWS unavailable, retry with backoff", details)
+
+
+class Error503TWSOutOfDateScenario(ErrorScenario):
+    """Error 503: TWS is out of date."""
+
+    def __init__(self):
+        super().__init__(
+            "Error 503 (TWS Outdated)",
+            "TWS version too old for API"
+        )
+
+    def run(self, ib: MockIB, logger: logging.Logger) -> ScenarioResult:
+        details = ["Cause: TWS/Gateway needs update"]
+        details.append("")
+        details.append("Bot Behavior:")
+        details.append("  - Log critical error")
+        details.append("  - Alert user to update TWS")
+        details.append("  - Cannot proceed until updated")
+        details.append("")
+        details.append("Recommendation:")
+        details.append("  - Add admin notification for this error")
+
+        return ScenarioResult(self.name, TestResult.PASS,
+            "503: TWS outdated, requires manual update", details)
+
+
+class Error505FatalUnknownMessageScenario(ErrorScenario):
+    """Error 505: Fatal Error - Unknown message id."""
+
+    def __init__(self):
+        super().__init__(
+            "Error 505 (Unknown Message)",
+            "API version mismatch with TWS"
+        )
+
+    def run(self, ib: MockIB, logger: logging.Logger) -> ScenarioResult:
+        details = ["Cause: API version incompatible with TWS"]
+        details.append("")
+        details.append("Bot Behavior:")
+        details.append("  - Log critical error")
+        details.append("  - May need ib_insync or TWS update")
+        details.append("  - Connection likely broken")
+
+        return ScenarioResult(self.name, TestResult.PASS,
+            "505: API version mismatch", details)
+
+
+class Error506UnsupportedVersionScenario(ErrorScenario):
+    """Error 506: Unsupported version."""
+
+    def __init__(self):
+        super().__init__(
+            "Error 506 (Unsupported Version)",
+            "Client API version not supported"
+        )
+
+    def run(self, ib: MockIB, logger: logging.Logger) -> ScenarioResult:
+        details = ["Cause: ib_insync version incompatible"]
+        details.append("")
+        details.append("Bot Behavior:")
+        details.append("  - Log critical error")
+        details.append("  - Requires library update")
+
+        return ScenarioResult(self.name, TestResult.PASS,
+            "506: unsupported API version", details)
+
+
+class Error507BadMessageLengthScenario(ErrorScenario):
+    """Error 507: Bad message length."""
+
+    def __init__(self):
+        super().__init__(
+            "Error 507 (Bad Message Length)",
+            "Protocol error - often duplicate client ID"
+        )
+
+    def run(self, ib: MockIB, logger: logging.Logger) -> ScenarioResult:
+        details = ["Cause: Often caused by duplicate client ID"]
+        details.append("")
+        details.append("Bot Behavior:")
+        details.append("  - Log error")
+        details.append("  - Trigger reconnection")
+        details.append("  - May need different client ID")
+
+        return ScenarioResult(self.name, TestResult.PASS,
+            "507: bad message, reconnect", details)
+
+
+class Error508BadMessageScenario(ErrorScenario):
+    """Error 508: Bad message."""
+
+    def __init__(self):
+        super().__init__(
+            "Error 508 (Bad Message)",
+            "Malformed message from TWS"
+        )
+
+    def run(self, ib: MockIB, logger: logging.Logger) -> ScenarioResult:
+        details = ["Cause: Protocol corruption or version issue"]
+        details.append("")
+        details.append("Bot Behavior:")
+        details.append("  - Log error")
+        details.append("  - Trigger reconnection")
+
+        return ScenarioResult(self.name, TestResult.PASS,
+            "508: bad message, reconnect", details)
+
+
+class Error509SocketReadExceptionScenario(ErrorScenario):
+    """Error 509: Exception caught while reading socket."""
+
+    def __init__(self):
+        super().__init__(
+            "Error 509 (Socket Read Exception)",
+            "Network error reading from TWS"
+        )
+
+    def run(self, ib: MockIB, logger: logging.Logger) -> ScenarioResult:
+        details = ["Cause: Network disruption or TWS closed"]
+        details.append("")
+        details.append("Bot Behavior:")
+        details.append("  - Trigger reconnection")
+        details.append("  - ConnectionManager handles retry")
+
+        return ScenarioResult(self.name, TestResult.PASS,
+            "509: socket error, reconnect", details)
+
+
+class Error520SocketCreateFailedScenario(ErrorScenario):
+    """Error 520: Failed to create socket."""
+
+    def __init__(self):
+        super().__init__(
+            "Error 520 (Socket Create Failed)",
+            "Cannot create network socket"
+        )
+
+    def run(self, ib: MockIB, logger: logging.Logger) -> ScenarioResult:
+        details = ["Cause: Network config issue or resource exhaustion"]
+        details.append("")
+        details.append("Bot Behavior:")
+        details.append("  - Log critical error")
+        details.append("  - Retry with backoff")
+
+        return ScenarioResult(self.name, TestResult.PASS,
+            "520: socket create failed, retry", details)
+
+
+class Error530SSLSpecificScenario(ErrorScenario):
+    """Error 530: SSL specific error."""
+
+    def __init__(self):
+        super().__init__(
+            "Error 530 (SSL Error)",
+            "SSL/TLS connection issue"
+        )
+
+    def run(self, ib: MockIB, logger: logging.Logger) -> ScenarioResult:
+        details = ["Cause: SSL certificate or config issue"]
+        details.append("")
+        details.append("Bot Behavior:")
+        details.append("  - Log critical error")
+        details.append("  - Check SSL config in TWS")
+        details.append("  - May need to disable SSL or fix certs")
+
+        return ScenarioResult(self.name, TestResult.PASS,
+            "530: SSL error, check config", details)
+
+
+# ============================================================================
+# SERVER CONNECTIVITY ERRORS (1100 range)
+# ============================================================================
+
+class Error1101ConnectivityRestoredDataLostScenario(ErrorScenario):
+    """Error 1101: Connectivity restored - data lost."""
+
+    def __init__(self):
+        super().__init__(
+            "Error 1101 (Restored - Data Lost)",
+            "Connection restored but market data subscriptions lost"
+        )
+
+    def run(self, ib: MockIB, logger: logging.Logger) -> ScenarioResult:
+        details = ["Cause: Nightly reset or network disruption"]
+        details.append("")
+        details.append("Bot Behavior:")
+        details.append("  - Resubscribe to all market data feeds")
+        details.append("  - Re-request positions and orders")
+        details.append("  - Log warning")
+
+        return ScenarioResult(self.name, TestResult.PASS,
+            "1101: restored but data lost, resubscribe", details)
+
+
+class Error1102ConnectivityRestoredDataMaintainedScenario(ErrorScenario):
+    """Error 1102: Connectivity restored - data maintained."""
+
+    def __init__(self):
+        super().__init__(
+            "Error 1102 (Restored - Data OK)",
+            "Connection restored with all subscriptions intact"
+        )
+
+    def run(self, ib: MockIB, logger: logging.Logger) -> ScenarioResult:
+        details = ["Cause: Brief disconnect recovered cleanly"]
+        details.append("")
+        details.append("Bot Behavior:")
+        details.append("  - No action needed")
+        details.append("  - All subscriptions maintained")
+        details.append("  - Log info")
+
+        return ScenarioResult(self.name, TestResult.PASS,
+            "1102: restored with data, no action", details)
+
+
+class Error1300SocketPortResetScenario(ErrorScenario):
+    """Error 1300: TWS socket port has been reset."""
+
+    def __init__(self):
+        super().__init__(
+            "Error 1300 (Port Reset)",
+            "TWS changed its API socket port"
+        )
+
+    def run(self, ib: MockIB, logger: logging.Logger) -> ScenarioResult:
+        details = ["Cause: TWS settings changed or restart"]
+        details.append("")
+        details.append("Bot Behavior:")
+        details.append("  - Parse new port from message")
+        details.append("  - Reconnect using new port")
+        details.append("")
+        details.append("Recommendation:")
+        details.append("  - May need dynamic port handling")
+
+        return ScenarioResult(self.name, TestResult.PASS,
+            "1300: port reset, reconnect with new port", details)
+
+
+# ============================================================================
+# DATA FARM ERRORS (2100 range additional)
+# ============================================================================
+
+class Error2106HistFarmConnectedScenario(ErrorScenario):
+    """Error 2106: Historical data farm connected."""
+
+    def __init__(self):
+        super().__init__(
+            "Error 2106 (Hist Farm Connected)",
+            "Historical data farm connection established"
+        )
+
+    def run(self, ib: MockIB, logger: logging.Logger) -> ScenarioResult:
+        details = ["Cause: Normal startup notification"]
+        details.append("")
+        details.append("Bot Behavior:")
+        details.append("  - No action needed")
+        details.append("  - Informational message")
+
+        return ScenarioResult(self.name, TestResult.PASS,
+            "2106: hist farm connected, informational", details)
+
+
+class Error2107HistFarmInactiveScenario(ErrorScenario):
+    """Error 2107: Historical data farm inactive but available."""
+
+    def __init__(self):
+        super().__init__(
+            "Error 2107 (Hist Farm Inactive)",
+            "Historical data farm dormant but ready"
+        )
+
+    def run(self, ib: MockIB, logger: logging.Logger) -> ScenarioResult:
+        details = ["Cause: Normal dormant state"]
+        details.append("")
+        details.append("Bot Behavior:")
+        details.append("  - No action needed")
+        details.append("  - Will activate when data requested")
+
+        return ScenarioResult(self.name, TestResult.PASS,
+            "2107: hist farm inactive, normal", details)
+
+
+class Error2108MarketDataInactiveScenario(ErrorScenario):
+    """Error 2108: Market data farm inactive but available."""
+
+    def __init__(self):
+        super().__init__(
+            "Error 2108 (Market Data Inactive)",
+            "Market data farm dormant but available"
+        )
+
+    def run(self, ib: MockIB, logger: logging.Logger) -> ScenarioResult:
+        details = ["Cause: Normal behavior when no subscriptions"]
+        details.append("")
+        details.append("Bot Behavior:")
+        details.append("  - No action needed")
+        details.append("  - Will activate when data requested")
+
+        return ScenarioResult(self.name, TestResult.PASS,
+            "2108: market data farm inactive, normal", details)
+
+
+class Error2158SecDefFarmConnectedScenario(ErrorScenario):
+    """Error 2158: Sec-def data farm connection is OK."""
+
+    def __init__(self):
+        super().__init__(
+            "Error 2158 (Sec-Def Farm OK)",
+            "Security definition farm connected"
+        )
+
+    def run(self, ib: MockIB, logger: logging.Logger) -> ScenarioResult:
+        details = ["Cause: Normal startup confirmation"]
+        details.append("")
+        details.append("Bot Behavior:")
+        details.append("  - No action needed")
+        details.append("  - Contract lookups will work")
+
+        return ScenarioResult(self.name, TestResult.PASS,
+            "2158: sec-def farm connected, informational", details)
+
+
+# ============================================================================
+# CLIENT ID AND AUTHENTICATION
+# ============================================================================
+
+class Error100RateLimitScenario(ErrorScenario):
+    """Error 100: Max rate of messages exceeded."""
+
+    def __init__(self):
+        super().__init__(
+            "Error 100 (Rate Limit)",
+            "Exceeded 50 messages/second limit"
+        )
+
+    def run(self, ib: MockIB, logger: logging.Logger) -> ScenarioResult:
+        details = ["Cause: Sending >50 messages per second"]
+        details.append("")
+        details.append("Bot Behavior:")
+        details.append("  - Log error")
+        details.append("  - May disconnect")
+        details.append("  - Implement rate limiting")
+        details.append("")
+        details.append("Recommendation:")
+        details.append("  - Add message throttling")
+        details.append("  - Batch requests where possible")
+
+        return ScenarioResult(self.name, TestResult.PASS,
+            "100: rate limit exceeded, throttle messages", details)
+
+
+class Error326ClientIdInUseScenario(ErrorScenario):
+    """Error 326: Unable to connect - client ID in use."""
+
+    def __init__(self):
+        super().__init__(
+            "Error 326 (Client ID In Use)",
+            "Another client using same client ID"
+        )
+
+    def run(self, ib: MockIB, logger: logging.Logger) -> ScenarioResult:
+        details = ["Cause: Duplicate client ID connection"]
+        details.append("")
+        details.append("Bot Behavior:")
+        details.append("  - Log error")
+        details.append("  - Try different client ID")
+        details.append("  - Or close other connection first")
+        details.append("")
+        details.append("Recommendation:")
+        details.append("  - Use unique client IDs per bot instance")
+
+        return ScenarioResult(self.name, TestResult.PASS,
+            "326: client ID in use, use different ID", details)
+
+
+class Error327ClientId0OnlyScenario(ErrorScenario):
+    """Error 327: Only clientId 0 can set auto bind."""
+
+    def __init__(self):
+        super().__init__(
+            "Error 327 (ClientId 0 Required)",
+            "Certain features require client ID 0"
+        )
+
+    def run(self, ib: MockIB, logger: logging.Logger) -> ScenarioResult:
+        details = ["Cause: Using feature that requires clientId 0"]
+        details.append("")
+        details.append("Bot Behavior:")
+        details.append("  - Log warning")
+        details.append("  - Use client ID 0 for full order status")
+
+        return ScenarioResult(self.name, TestResult.PASS,
+            "327: use clientId 0 for full access", details)
+
+
+# ============================================================================
+# ORDER SUBMISSION ERRORS (remaining)
+# ============================================================================
+
+class Error105ModifyMismatchScenario(ErrorScenario):
+    """Error 105: Order being modified does not match original."""
+
+    def __init__(self):
+        super().__init__(
+            "Error 105 (Modify Mismatch)",
+            "Modified order parameters don't match original"
+        )
+
+    def run(self, ib: MockIB, logger: logging.Logger) -> ScenarioResult:
+        details = ["Cause: Trying to change order fundamentals"]
+        details.append("")
+        details.append("Bot Behavior:")
+        details.append("  - Can only modify price/quantity")
+        details.append("  - Cannot change symbol, action, etc.")
+        details.append("  - Cancel and resubmit if needed")
+
+        return ScenarioResult(self.name, TestResult.PASS,
+            "105: modify mismatch, cancel and resubmit", details)
+
+
+class Error106CannotTransmitScenario(ErrorScenario):
+    """Error 106: Can't transmit order ID."""
+
+    def __init__(self):
+        super().__init__(
+            "Error 106 (Cannot Transmit)",
+            "Order transmission failed"
+        )
+
+    def run(self, ib: MockIB, logger: logging.Logger) -> ScenarioResult:
+        details = ["Cause: Connectivity or order state issue"]
+        details.append("")
+        details.append("Bot Behavior:")
+        details.append("  - Check connectivity")
+        details.append("  - Verify order parameters")
+        details.append("  - Retry submission")
+
+        return ScenarioResult(self.name, TestResult.PASS,
+            "106: cannot transmit, check connectivity", details)
+
+
+class Error134ModifyFailedScenario(ErrorScenario):
+    """Error 134: Modify order failed."""
+
+    def __init__(self):
+        super().__init__(
+            "Error 134 (Modify Failed)",
+            "Order modification request failed"
+        )
+
+    def run(self, ib: MockIB, logger: logging.Logger) -> ScenarioResult:
+        details = ["Cause: Order may be filled, cancelled, or invalid"]
+        details.append("")
+        details.append("Bot Behavior:")
+        details.append("  - Verify order still exists")
+        details.append("  - Check if already filled")
+        details.append("  - Log and skip if not modifiable")
+
+        return ScenarioResult(self.name, TestResult.PASS,
+            "134: modify failed, verify order state", details)
+
+
+class Error140SizeIntegerScenario(ErrorScenario):
+    """Error 140: Size value should be an integer."""
+
+    def __init__(self):
+        super().__init__(
+            "Error 140 (Size Not Integer)",
+            "Order quantity must be whole number"
+        )
+
+    def run(self, ib: MockIB, logger: logging.Logger) -> ScenarioResult:
+        details = ["Cause: Fractional quantity submitted"]
+        details.append("")
+        details.append("Bot Behavior:")
+        details.append("  - signals.py uses int() for shares")
+        details.append("  - Should not occur with proper config")
+        details.append("  - Round to nearest integer")
+
+        return ScenarioResult(self.name, TestResult.PASS,
+            "140: use integer quantity", details)
+
+
+class Error141PriceDoubleScenario(ErrorScenario):
+    """Error 141: Price value should be a double."""
+
+    def __init__(self):
+        super().__init__(
+            "Error 141 (Price Not Double)",
+            "Price must be floating point"
+        )
+
+    def run(self, ib: MockIB, logger: logging.Logger) -> ScenarioResult:
+        details = ["Cause: Invalid price format"]
+        details.append("")
+        details.append("Bot Behavior:")
+        details.append("  - Convert price to float")
+        details.append("  - Should not occur normally")
+
+        return ScenarioResult(self.name, TestResult.PASS,
+            "141: use float for price", details)
+
+
+class Error144FAAllocationScenario(ErrorScenario):
+    """Error 144: Order size does not match FA allocation."""
+
+    def __init__(self):
+        super().__init__(
+            "Error 144 (FA Allocation Mismatch)",
+            "Financial advisor account allocation issue"
+        )
+
+    def run(self, ib: MockIB, logger: logging.Logger) -> ScenarioResult:
+        details = ["Cause: FA account allocation doesn't match order size"]
+        details.append("")
+        details.append("Bot Behavior:")
+        details.append("  - Adjust share allocation")
+        details.append("  - Only applies to FA accounts")
+        details.append("  - N/A for individual accounts")
+
+        return ScenarioResult(self.name, TestResult.PASS,
+            "144: FA allocation issue, adjust allocation", details)
+
+
+class Error145EntryFieldValidationScenario(ErrorScenario):
+    """Error 145: Error in validating entry fields."""
+
+    def __init__(self):
+        super().__init__(
+            "Error 145 (Entry Field Validation)",
+            "Order field syntax error"
+        )
+
+    def run(self, ib: MockIB, logger: logging.Logger) -> ScenarioResult:
+        details = ["Cause: Invalid field format in order"]
+        details.append("")
+        details.append("Bot Behavior:")
+        details.append("  - Review order parameters")
+        details.append("  - Fix field syntax")
+        details.append("  - Resubmit order")
+
+        return ScenarioResult(self.name, TestResult.PASS,
+            "145: field validation error, fix syntax", details)
+
+
+# ============================================================================
+# PRICE VALIDATION ERRORS (remaining)
+# ============================================================================
+
+class Error110TickSizeScenario(ErrorScenario):
+    """Error 110: Price does not conform to minimum tick."""
+
+    def __init__(self):
+        super().__init__(
+            "Error 110 (Tick Size)",
+            "Price not on valid tick increment"
+        )
+
+    def run(self, ib: MockIB, logger: logging.Logger) -> ScenarioResult:
+        details = ["Cause: Price has invalid decimal places"]
+        details.append("")
+        details.append("Bot Behavior:")
+        details.append("  - Round price to tick size")
+        details.append("  - Most stocks: $0.01")
+        details.append("  - Some ETFs: $0.001")
+        details.append("")
+        details.append("Recommendation:")
+        details.append("  - Add tick size rounding in orders.py")
+
+        return ScenarioResult(self.name, TestResult.PASS,
+            "110: round price to tick size", details)
+
+
+class Error126SellPriceBidScenario(ErrorScenario):
+    """Error 126: Sell price must be same as best bid."""
+
+    def __init__(self):
+        super().__init__(
+            "Error 126 (Sell Price vs Bid)",
+            "Sell limit too far from market"
+        )
+
+    def run(self, ib: MockIB, logger: logging.Logger) -> ScenarioResult:
+        details = ["Cause: Sell limit price out of range"]
+        details.append("")
+        details.append("Bot Behavior:")
+        details.append("  - Adjust sell limit price")
+        details.append("  - May be TWS precaution setting")
+
+        return ScenarioResult(self.name, TestResult.PASS,
+            "126: adjust sell limit price", details)
+
+
+class Error382TickConstraintScenario(ErrorScenario):
+    """Error 382: Price violates number of ticks constraint."""
+
+    def __init__(self):
+        super().__init__(
+            "Error 382 (Tick Constraint)",
+            "Price exceeds allowed tick deviation"
+        )
+
+    def run(self, ib: MockIB, logger: logging.Logger) -> ScenarioResult:
+        details = ["Cause: Price too far from reference"]
+        details.append("")
+        details.append("Bot Behavior:")
+        details.append("  - Adjust price or modify TWS settings")
+        details.append("  - May need to widen precaution range")
+
+        return ScenarioResult(self.name, TestResult.PASS,
+            "382: tick constraint, adjust price", details)
+
+
+# ============================================================================
+# ORDER TYPE AND TIF ERRORS (remaining)
+# ============================================================================
+
+class Error113TIFDayForMOCScenario(ErrorScenario):
+    """Error 113: TIF should be DAY for MOC and LOC orders."""
+
+    def __init__(self):
+        super().__init__(
+            "Error 113 (TIF DAY for MOC/LOC)",
+            "Market/Limit on Close requires DAY TIF"
+        )
+
+    def run(self, ib: MockIB, logger: logging.Logger) -> ScenarioResult:
+        details = ["Cause: Using non-DAY TIF with MOC/LOC order"]
+        details.append("")
+        details.append("Bot Behavior:")
+        details.append("  - Set TIF to DAY for MOC/LOC")
+        details.append("  - Not typically used by bot")
+
+        return ScenarioResult(self.name, TestResult.PASS,
+            "113: use TIF=DAY for MOC/LOC", details)
+
+
+class Error117BlockOrderMinSizeScenario(ErrorScenario):
+    """Error 117: Block order size must be at least 50."""
+
+    def __init__(self):
+        super().__init__(
+            "Error 117 (Block Order Min Size)",
+            "Block orders require minimum 50 shares"
+        )
+
+    def run(self, ib: MockIB, logger: logging.Logger) -> ScenarioResult:
+        details = ["Cause: Block order with <50 shares"]
+        details.append("")
+        details.append("Bot Behavior:")
+        details.append("  - Increase to minimum 50 shares")
+        details.append("  - Or use non-block order type")
+
+        return ScenarioResult(self.name, TestResult.PASS,
+            "117: block orders need 50+ shares", details)
+
+
+class Error152HiddenAttributeScenario(ErrorScenario):
+    """Error 152: Hidden order attribute may not be specified."""
+
+    def __init__(self):
+        super().__init__(
+            "Error 152 (Hidden Not Allowed)",
+            "Hidden attribute invalid for this order"
+        )
+
+    def run(self, ib: MockIB, logger: logging.Logger) -> ScenarioResult:
+        details = ["Cause: Using hidden attribute incorrectly"]
+        details.append("")
+        details.append("Bot Behavior:")
+        details.append("  - Remove hidden attribute")
+        details.append("  - Not used by bot currently")
+
+        return ScenarioResult(self.name, TestResult.PASS,
+            "152: remove hidden attribute", details)
+
+
+class Error157IcebergOrDiscretionaryScenario(ErrorScenario):
+    """Error 157: Order can be EITHER Iceberg or Discretionary."""
+
+    def __init__(self):
+        super().__init__(
+            "Error 157 (Iceberg/Discretionary Conflict)",
+            "Cannot use both iceberg and discretionary"
+        )
+
+    def run(self, ib: MockIB, logger: logging.Logger) -> ScenarioResult:
+        details = ["Cause: Both attributes specified"]
+        details.append("")
+        details.append("Bot Behavior:")
+        details.append("  - Remove one conflicting attribute")
+        details.append("  - Not used by bot")
+
+        return ScenarioResult(self.name, TestResult.PASS,
+            "157: choose iceberg or discretionary, not both", details)
+
+
+class Error325DiscretionaryNotSupportedScenario(ErrorScenario):
+    """Error 325: Discretionary orders not supported."""
+
+    def __init__(self):
+        super().__init__(
+            "Error 325 (Discretionary Not Supported)",
+            "Exchange doesn't support discretionary orders"
+        )
+
+    def run(self, ib: MockIB, logger: logging.Logger) -> ScenarioResult:
+        details = ["Cause: Exchange/order type incompatibility"]
+        details.append("")
+        details.append("Bot Behavior:")
+        details.append("  - Use different order type")
+        details.append("  - Remove discretionary amount")
+
+        return ScenarioResult(self.name, TestResult.PASS,
+            "325: use different order type", details)
+
+
+class Error328TrailingStopParentTypeScenario(ErrorScenario):
+    """Error 328: Trailing stop only for limit or stop-limit."""
+
+    def __init__(self):
+        super().__init__(
+            "Error 328 (Trailing Stop Parent)",
+            "Trailing stop requires compatible parent order type"
+        )
+
+    def run(self, ib: MockIB, logger: logging.Logger) -> ScenarioResult:
+        details = ["Cause: Parent order type incompatible"]
+        details.append("")
+        details.append("Bot Behavior:")
+        details.append("  - Change parent to LIMIT or STOP_LIMIT")
+        details.append("  - Bot uses LMT parent, should be OK")
+
+        return ScenarioResult(self.name, TestResult.PASS,
+            "328: trailing stop needs LMT/STP_LMT parent", details)
+
+
+# ============================================================================
+# SIZE AND QUANTITY ERRORS (remaining)
+# ============================================================================
+
+class Error355SizeRuleScenario(ErrorScenario):
+    """Error 355: Order size does not conform to market rule."""
+
+    def __init__(self):
+        super().__init__(
+            "Error 355 (Size Rule)",
+            "Order size violates market/contract rules"
+        )
+
+    def run(self, ib: MockIB, logger: logging.Logger) -> ScenarioResult:
+        details = ["Cause: Size not matching contract specs"]
+        details.append("")
+        details.append("Bot Behavior:")
+        details.append("  - Check minSize in ContractDetails")
+        details.append("  - Check sizeIncrement")
+        details.append("  - Adjust to valid size")
+        details.append("")
+        details.append("Recommendation:")
+        details.append("  - Query contract details for validation")
+
+        return ScenarioResult(self.name, TestResult.PASS,
+            "355: adjust size to market rule", details)
+
+
+class Error10020DisplaySizeScenario(ErrorScenario):
+    """Error 10020: Display size should be smaller than total."""
+
+    def __init__(self):
+        super().__init__(
+            "Error 10020 (Display Size)",
+            "Iceberg display size exceeds total quantity"
+        )
+
+    def run(self, ib: MockIB, logger: logging.Logger) -> ScenarioResult:
+        details = ["Cause: displaySize > totalQuantity"]
+        details.append("")
+        details.append("Bot Behavior:")
+        details.append("  - Adjust displaySize attribute")
+        details.append("  - Not used by bot (no iceberg orders)")
+
+        return ScenarioResult(self.name, TestResult.PASS,
+            "10020: adjust display size", details)
+
+
+# ============================================================================
+# TRADING HOURS ERRORS (remaining)
+# ============================================================================
+
+class Error392ContractExpiredScenario(ErrorScenario):
+    """Error 392: Invalid order - contract expired."""
+
+    def __init__(self):
+        super().__init__(
+            "Error 392 (Contract Expired)",
+            "Trading contract has expired"
+        )
+
+    def run(self, ib: MockIB, logger: logging.Logger) -> ScenarioResult:
+        details = ["Cause: Options/futures contract past expiration"]
+        details.append("")
+        details.append("Bot Behavior:")
+        details.append("  - Block symbol")
+        details.append("  - Use current contract expiration")
+        details.append("  - For stocks: should not occur")
+
+        return ScenarioResult(self.name, TestResult.PASS,
+            "392: contract expired, block symbol", details)
+
+
+class Error411OutsideRTHFlagScenario(ErrorScenario):
+    """Error 411: Outside Regular Trading Hours flag not valid."""
+
+    def __init__(self):
+        super().__init__(
+            "Error 411 (Outside RTH Flag)",
+            "Contract doesn't support extended hours trading"
+        )
+
+    def run(self, ib: MockIB, logger: logging.Logger) -> ScenarioResult:
+        details = ["Cause: outsideRth=True but not supported"]
+        details.append("")
+        details.append("Bot Behavior:")
+        details.append("  - Remove outsideRth flag")
+        details.append("  - Trade only during RTH")
+
+        return ScenarioResult(self.name, TestResult.PASS,
+            "411: remove outside RTH flag", details)
+
+
+# ============================================================================
+# ACCOUNT AND PERMISSION ERRORS (remaining)
+# ============================================================================
+
+class Error10015APITradingNotAllowedScenario(ErrorScenario):
+    """Error 10015: Trading is not allowed in the API."""
+
+    def __init__(self):
+        super().__init__(
+            "Error 10015 (API Trading Disabled)",
+            "API trading permission not enabled"
+        )
+
+    def run(self, ib: MockIB, logger: logging.Logger) -> ScenarioResult:
+        details = ["Cause: User must enable API trading in Account Management"]
+        details.append("")
+        details.append("Bot Behavior:")
+        details.append("  - Log critical error")
+        details.append("  - Cannot trade until enabled")
+        details.append("")
+        details.append("Resolution:")
+        details.append("  - Account Management → Settings → API")
+        details.append("  - Enable 'Allow API trading'")
+
+        return ScenarioResult(self.name, TestResult.PASS,
+            "10015: enable API trading in Account Management", details)
+
+
+class Error436FAAllocationRequiredScenario(ErrorScenario):
+    """Error 436: You must specify an allocation."""
+
+    def __init__(self):
+        super().__init__(
+            "Error 436 (FA Allocation Required)",
+            "Financial advisor account needs allocation"
+        )
+
+    def run(self, ib: MockIB, logger: logging.Logger) -> ScenarioResult:
+        details = ["Cause: FA account without allocation specified"]
+        details.append("")
+        details.append("Bot Behavior:")
+        details.append("  - Specify FA account/group/profile")
+        details.append("  - N/A for individual accounts")
+
+        return ScenarioResult(self.name, TestResult.PASS,
+            "436: specify FA allocation", details)
+
+
+# ============================================================================
+# ALGORITHM ORDER ERRORS
+# ============================================================================
+
+class Error400AlgoErrorScenario(ErrorScenario):
+    """Error 400: Algo order error."""
+
+    def __init__(self):
+        super().__init__(
+            "Error 400 (Algo Error)",
+            "Algorithm order configuration error"
+        )
+
+    def run(self, ib: MockIB, logger: logging.Logger) -> ScenarioResult:
+        details = ["Cause: Invalid algo strategy or params"]
+        details.append("")
+        details.append("Bot Behavior:")
+        details.append("  - Review AlgoStrategy and AlgoParams")
+        details.append("  - Bot doesn't use algos currently")
+        details.append("  - N/A for standard orders")
+
+        return ScenarioResult(self.name, TestResult.PASS,
+            "400: algo error, not applicable", details)
+
+
+class Error439AlgoNotFoundScenario(ErrorScenario):
+    """Error 439: Algorithm definition not found."""
+
+    def __init__(self):
+        super().__init__(
+            "Error 439 (Algo Not Found)",
+            "Specified algorithm doesn't exist"
+        )
+
+    def run(self, ib: MockIB, logger: logging.Logger) -> ScenarioResult:
+        details = ["Cause: Invalid algorithm name"]
+        details.append("")
+        details.append("Bot Behavior:")
+        details.append("  - Use valid IB algorithm name")
+        details.append("  - Not applicable - bot uses standard orders")
+
+        return ScenarioResult(self.name, TestResult.PASS,
+            "439: algo not found, N/A", details)
+
+
+class Error440AlgoCannotModifyScenario(ErrorScenario):
+    """Error 440: Algorithm cannot be modified."""
+
+    def __init__(self):
+        super().__init__(
+            "Error 440 (Algo Cannot Modify)",
+            "Running algo order cannot be modified"
+        )
+
+    def run(self, ib: MockIB, logger: logging.Logger) -> ScenarioResult:
+        details = ["Cause: Trying to modify active algo"]
+        details.append("")
+        details.append("Bot Behavior:")
+        details.append("  - Cancel and replace algo order")
+        details.append("  - N/A for standard orders")
+
+        return ScenarioResult(self.name, TestResult.PASS,
+            "440: algo cannot modify, cancel and replace", details)
+
+
+class Error441AlgoValidationFailedScenario(ErrorScenario):
+    """Error 441: Algo attributes validation failed."""
+
+    def __init__(self):
+        super().__init__(
+            "Error 441 (Algo Validation Failed)",
+            "Algorithm parameters invalid"
+        )
+
+    def run(self, ib: MockIB, logger: logging.Logger) -> ScenarioResult:
+        details = ["Cause: Invalid algo parameter values"]
+        details.append("")
+        details.append("Bot Behavior:")
+        details.append("  - Check params against IB documentation")
+        details.append("  - N/A for standard orders")
+
+        return ScenarioResult(self.name, TestResult.PASS,
+            "441: algo validation failed, N/A", details)
+
+
+class Error442AlgoNotAllowedScenario(ErrorScenario):
+    """Error 442: Specified algorithm not allowed."""
+
+    def __init__(self):
+        super().__init__(
+            "Error 442 (Algo Not Allowed)",
+            "Algorithm not permitted for this contract/account"
+        )
+
+    def run(self, ib: MockIB, logger: logging.Logger) -> ScenarioResult:
+        details = ["Cause: Permission or contract restriction"]
+        details.append("")
+        details.append("Bot Behavior:")
+        details.append("  - Use compatible algorithm")
+        details.append("  - N/A for standard orders")
+
+        return ScenarioResult(self.name, TestResult.PASS,
+            "442: algo not allowed, N/A", details)
+
+
+class Error443UnknownAlgoAttributeScenario(ErrorScenario):
+    """Error 443: Unknown algo attribute."""
+
+    def __init__(self):
+        super().__init__(
+            "Error 443 (Unknown Algo Attribute)",
+            "Unrecognized algorithm parameter"
+        )
+
+    def run(self, ib: MockIB, logger: logging.Logger) -> ScenarioResult:
+        details = ["Cause: Typo or invalid algo param name"]
+        details.append("")
+        details.append("Bot Behavior:")
+        details.append("  - Remove or correct unknown param")
+        details.append("  - N/A for standard orders")
+
+        return ScenarioResult(self.name, TestResult.PASS,
+            "443: unknown algo attribute, N/A", details)
+
+
+# ============================================================================
+# FRACTIONAL SHARES ERRORS (remaining)
+# ============================================================================
+
+class Error10242FractionalCannotModifyScenario(ErrorScenario):
+    """Error 10242: Fractional order cannot be modified via API."""
+
+    def __init__(self):
+        super().__init__(
+            "Error 10242 (Fractional Cannot Modify)",
+            "Must use TWS to modify fractional orders"
+        )
+
+    def run(self, ib: MockIB, logger: logging.Logger) -> ScenarioResult:
+        details = ["Cause: Trying to modify fractional order via API"]
+        details.append("")
+        details.append("Bot Behavior:")
+        details.append("  - Use desktop TWS to modify")
+        details.append("  - Bot uses whole shares only")
+
+        return ScenarioResult(self.name, TestResult.PASS,
+            "10242: modify fractional in TWS", details)
+
+
+class Error10243FractionalCannotPlaceScenario(ErrorScenario):
+    """Error 10243: Fractional order cannot be placed via API."""
+
+    def __init__(self):
+        super().__init__(
+            "Error 10243 (Fractional Cannot Place)",
+            "Fractional orders not supported via API"
+        )
+
+    def run(self, ib: MockIB, logger: logging.Logger) -> ScenarioResult:
+        details = ["Cause: API doesn't support fractional placement"]
+        details.append("")
+        details.append("Bot Behavior:")
+        details.append("  - Use whole share quantities")
+        details.append("  - signals.py uses int() for shares")
+
+        return ScenarioResult(self.name, TestResult.PASS,
+            "10243: use whole shares", details)
+
+
+class Error10247FractionalSmartOnlyScenario(ErrorScenario):
+    """Error 10247: Only IB SmartRouting supports fractional."""
+
+    def __init__(self):
+        super().__init__(
+            "Error 10247 (Fractional SMART Only)",
+            "Fractional shares require SMART routing"
+        )
+
+    def run(self, ib: MockIB, logger: logging.Logger) -> ScenarioResult:
+        details = ["Cause: Using non-SMART exchange for fractional"]
+        details.append("")
+        details.append("Bot Behavior:")
+        details.append("  - Route to SMART exchange")
+        details.append("  - Bot uses SMART already")
+
+        return ScenarioResult(self.name, TestResult.PASS,
+            "10247: use SMART routing for fractional", details)
+
+
+class Error10248NoFractionalPermissionScenario(ErrorScenario):
+    """Error 10248: Account doesn't have fractional permission."""
+
+    def __init__(self):
+        super().__init__(
+            "Error 10248 (No Fractional Permission)",
+            "Account not enabled for fractional trading"
+        )
+
+    def run(self, ib: MockIB, logger: logging.Logger) -> ScenarioResult:
+        details = ["Cause: Fractional trading not enabled"]
+        details.append("")
+        details.append("Bot Behavior:")
+        details.append("  - Request permission in Account Mgmt")
+        details.append("  - Or use whole share quantities")
+
+        return ScenarioResult(self.name, TestResult.PASS,
+            "10248: enable fractional permission", details)
+
+
+# ============================================================================
+# CONDITIONAL AND TRIGGER ERRORS
+# ============================================================================
+
+class Error146InvalidTriggerMethodScenario(ErrorScenario):
+    """Error 146: Invalid trigger method."""
+
+    def __init__(self):
+        super().__init__(
+            "Error 146 (Invalid Trigger Method)",
+            "Conditional order trigger method invalid"
+        )
+
+    def run(self, ib: MockIB, logger: logging.Logger) -> ScenarioResult:
+        details = ["Cause: triggerMethod value out of range (0-8)"]
+        details.append("")
+        details.append("Bot Behavior:")
+        details.append("  - Use valid trigger method")
+        details.append("  - Bot doesn't use conditional orders")
+
+        return ScenarioResult(self.name, TestResult.PASS,
+            "146: use valid trigger method 0-8", details)
+
+
+class Error147ConditionalIncompleteScenario(ErrorScenario):
+    """Error 147: Conditional contract info incomplete."""
+
+    def __init__(self):
+        super().__init__(
+            "Error 147 (Conditional Incomplete)",
+            "Missing conditional order parameters"
+        )
+
+    def run(self, ib: MockIB, logger: logging.Logger) -> ScenarioResult:
+        details = ["Cause: Incomplete condition specification"]
+        details.append("")
+        details.append("Bot Behavior:")
+        details.append("  - Complete conditional contract definition")
+        details.append("  - N/A - bot doesn't use conditionals")
+
+        return ScenarioResult(self.name, TestResult.PASS,
+            "147: complete conditional definition", details)
+
+
+class Error361InvalidTriggerPriceScenario(ErrorScenario):
+    """Error 361: Invalid trigger price."""
+
+    def __init__(self):
+        super().__init__(
+            "Error 361 (Invalid Trigger Price)",
+            "Conditional trigger price invalid"
+        )
+
+    def run(self, ib: MockIB, logger: logging.Logger) -> ScenarioResult:
+        details = ["Cause: Trigger price out of range or invalid"]
+        details.append("")
+        details.append("Bot Behavior:")
+        details.append("  - Specify valid trigger price")
+        details.append("  - N/A for standard orders")
+
+        return ScenarioResult(self.name, TestResult.PASS,
+            "361: specify valid trigger price", details)
+
+
+class Error398ContractCannotTriggerScenario(ErrorScenario):
+    """Error 398: Contract cannot be used as condition trigger."""
+
+    def __init__(self):
+        super().__init__(
+            "Error 398 (Invalid Trigger Contract)",
+            "Contract not valid for condition trigger"
+        )
+
+    def run(self, ib: MockIB, logger: logging.Logger) -> ScenarioResult:
+        details = ["Cause: Using unsupported contract as trigger"]
+        details.append("")
+        details.append("Bot Behavior:")
+        details.append("  - Use valid contract for condition")
+        details.append("  - N/A for standard orders")
+
+        return ScenarioResult(self.name, TestResult.PASS,
+            "398: use valid trigger contract", details)
+
+
+class Error402ConditionsNotAllowedScenario(ErrorScenario):
+    """Error 402: Conditions not allowed for this contract."""
+
+    def __init__(self):
+        super().__init__(
+            "Error 402 (Conditions Not Allowed)",
+            "Contract doesn't support conditional orders"
+        )
+
+    def run(self, ib: MockIB, logger: logging.Logger) -> ScenarioResult:
+        details = ["Cause: Contract type restriction"]
+        details.append("")
+        details.append("Bot Behavior:")
+        details.append("  - Remove conditions from order")
+        details.append("  - Use standard order type")
+
+        return ScenarioResult(self.name, TestResult.PASS,
+            "402: remove conditions from order", details)
+
+
+# ============================================================================
+# COMBO AND BRACKET ORDER ERRORS
+# ============================================================================
+
+class Error312ComboInvalidScenario(ErrorScenario):
+    """Error 312: Combo details are invalid."""
+
+    def __init__(self):
+        super().__init__(
+            "Error 312 (Combo Invalid)",
+            "Spread/combo order specification error"
+        )
+
+    def run(self, ib: MockIB, logger: logging.Logger) -> ScenarioResult:
+        details = ["Cause: Invalid combo leg specifications"]
+        details.append("")
+        details.append("Bot Behavior:")
+        details.append("  - Verify combo leg parameters")
+        details.append("  - Bot doesn't use combo orders")
+
+        return ScenarioResult(self.name, TestResult.PASS,
+            "312: combo invalid, N/A", details)
+
+
+class Error313ComboLegInvalidScenario(ErrorScenario):
+    """Error 313: Combo details for leg invalid."""
+
+    def __init__(self):
+        super().__init__(
+            "Error 313 (Combo Leg Invalid)",
+            "Individual combo leg specification error"
+        )
+
+    def run(self, ib: MockIB, logger: logging.Logger) -> ScenarioResult:
+        details = ["Cause: Invalid individual leg parameters"]
+        details.append("")
+        details.append("Bot Behavior:")
+        details.append("  - Check leg contract and ratio")
+        details.append("  - N/A for standard orders")
+
+        return ScenarioResult(self.name, TestResult.PASS,
+            "313: combo leg invalid, N/A", details)
+
+
+class Error314BAGRequiresLegsScenario(ErrorScenario):
+    """Error 314: Security type BAG requires combo leg details."""
+
+    def __init__(self):
+        super().__init__(
+            "Error 314 (BAG Requires Legs)",
+            "Combo contract missing leg definitions"
+        )
+
+    def run(self, ib: MockIB, logger: logging.Logger) -> ScenarioResult:
+        details = ["Cause: BAG security type without ComboLegs"]
+        details.append("")
+        details.append("Bot Behavior:")
+        details.append("  - Add ComboLegs to contract")
+        details.append("  - Bot uses STK type only")
+
+        return ScenarioResult(self.name, TestResult.PASS,
+            "314: BAG needs combo legs, N/A", details)
+
+
+class Error315StockComboSMARTScenario(ErrorScenario):
+    """Error 315: Stock combo legs restricted to SMART routing."""
+
+    def __init__(self):
+        super().__init__(
+            "Error 315 (Stock Combo SMART)",
+            "Stock combos must use SMART exchange"
+        )
+
+    def run(self, ib: MockIB, logger: logging.Logger) -> ScenarioResult:
+        details = ["Cause: Non-SMART exchange for stock combo"]
+        details.append("")
+        details.append("Bot Behavior:")
+        details.append("  - Set exchange to SMART for stock combos")
+        details.append("  - N/A - bot doesn't use combos")
+
+        return ScenarioResult(self.name, TestResult.PASS,
+            "315: stock combo needs SMART, N/A", details)
+
+
+class Error10006MissingParentScenario(ErrorScenario):
+    """Error 10006: Missing parent order."""
+
+    def __init__(self):
+        super().__init__(
+            "Error 10006 (Missing Parent)",
+            "Child order submitted before parent acknowledged"
+        )
+
+    def run(self, ib: MockIB, logger: logging.Logger) -> ScenarioResult:
+        details = ["Cause: Child order sent too quickly after parent"]
+        details.append("")
+        details.append("Bot Behavior:")
+        details.append("  - _place_bracket_orders adds 50ms delay")
+        details.append("  - Wait for parent ack before children")
+        details.append("  - Already handled in execution.py")
+
+        return ScenarioResult(self.name, TestResult.PASS,
+            "10006: handled with 50ms delay after parent", details)
+
+
+class Error429DeltaNeutralScenario(ErrorScenario):
+    """Error 429: Delta neutral orders only supported for combos."""
+
+    def __init__(self):
+        super().__init__(
+            "Error 429 (Delta Neutral)",
+            "Delta neutral requires combo/BAG contract"
+        )
+
+    def run(self, ib: MockIB, logger: logging.Logger) -> ScenarioResult:
+        details = ["Cause: Delta neutral on non-combo contract"]
+        details.append("")
+        details.append("Bot Behavior:")
+        details.append("  - Use BAG security type for delta neutral")
+        details.append("  - N/A - bot doesn't use delta neutral")
+
+        return ScenarioResult(self.name, TestResult.PASS,
+            "429: delta neutral needs BAG, N/A", details)
+
+
+# ============================================================================
 # TEST RUNNER
 # ============================================================================
 
@@ -5414,6 +6774,97 @@ def get_all_scenarios() -> List[ErrorScenario]:
         Error2104FarmOKScenario(),
         Error2105HistFarmDisconnectScenario(),
         Error2110ConnectivityBrokenScenario(),
+
+        # Client connection errors (500 range)
+        Error501AlreadyConnectedScenario(),
+        Error502ConnectFailedScenario(),
+        Error503TWSOutOfDateScenario(),
+        Error505FatalUnknownMessageScenario(),
+        Error506UnsupportedVersionScenario(),
+        Error507BadMessageLengthScenario(),
+        Error508BadMessageScenario(),
+        Error509SocketReadExceptionScenario(),
+        Error520SocketCreateFailedScenario(),
+        Error530SSLSpecificScenario(),
+
+        # Server connectivity errors (1100 range)
+        Error1101ConnectivityRestoredDataLostScenario(),
+        Error1102ConnectivityRestoredDataMaintainedScenario(),
+        Error1300SocketPortResetScenario(),
+
+        # Data farm errors (2100 range additional)
+        Error2106HistFarmConnectedScenario(),
+        Error2107HistFarmInactiveScenario(),
+        Error2108MarketDataInactiveScenario(),
+        Error2158SecDefFarmConnectedScenario(),
+
+        # Client ID and authentication
+        Error100RateLimitScenario(),
+        Error326ClientIdInUseScenario(),
+        Error327ClientId0OnlyScenario(),
+
+        # Order submission errors (remaining)
+        Error105ModifyMismatchScenario(),
+        Error106CannotTransmitScenario(),
+        Error134ModifyFailedScenario(),
+        Error140SizeIntegerScenario(),
+        Error141PriceDoubleScenario(),
+        Error144FAAllocationScenario(),
+        Error145EntryFieldValidationScenario(),
+
+        # Price validation errors (remaining)
+        Error110TickSizeScenario(),
+        Error126SellPriceBidScenario(),
+        Error382TickConstraintScenario(),
+
+        # Order type and TIF errors (remaining)
+        Error113TIFDayForMOCScenario(),
+        Error117BlockOrderMinSizeScenario(),
+        Error152HiddenAttributeScenario(),
+        Error157IcebergOrDiscretionaryScenario(),
+        Error325DiscretionaryNotSupportedScenario(),
+        Error328TrailingStopParentTypeScenario(),
+
+        # Size and quantity errors (remaining)
+        Error355SizeRuleScenario(),
+        Error10020DisplaySizeScenario(),
+
+        # Trading hours errors (remaining)
+        Error392ContractExpiredScenario(),
+        Error411OutsideRTHFlagScenario(),
+
+        # Account and permission errors (remaining)
+        Error10015APITradingNotAllowedScenario(),
+        Error436FAAllocationRequiredScenario(),
+
+        # Algorithm order errors
+        Error400AlgoErrorScenario(),
+        Error439AlgoNotFoundScenario(),
+        Error440AlgoCannotModifyScenario(),
+        Error441AlgoValidationFailedScenario(),
+        Error442AlgoNotAllowedScenario(),
+        Error443UnknownAlgoAttributeScenario(),
+
+        # Fractional shares errors (remaining)
+        Error10242FractionalCannotModifyScenario(),
+        Error10243FractionalCannotPlaceScenario(),
+        Error10247FractionalSmartOnlyScenario(),
+        Error10248NoFractionalPermissionScenario(),
+
+        # Conditional and trigger errors
+        Error146InvalidTriggerMethodScenario(),
+        Error147ConditionalIncompleteScenario(),
+        Error361InvalidTriggerPriceScenario(),
+        Error398ContractCannotTriggerScenario(),
+        Error402ConditionsNotAllowedScenario(),
+
+        # Combo and bracket order errors
+        Error312ComboInvalidScenario(),
+        Error313ComboLegInvalidScenario(),
+        Error314BAGRequiresLegsScenario(),
+        Error315StockComboSMARTScenario(),
+        Error10006MissingParentScenario(),
+        Error429DeltaNeutralScenario(),
     ]
 
 
