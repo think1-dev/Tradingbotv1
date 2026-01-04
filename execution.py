@@ -250,7 +250,18 @@ class OrderExecutor:
             PlacementResult with order_id on success, rejection info on failure.
         """
         tag = f"DAY_{sig.symbol}_{sig.strategy_id}"
-        direction = (sig.direction or "LONG").upper()
+
+        # Direction is required - do not assume (validation done in orders.py, but log correctly)
+        direction = getattr(sig, "direction", None)
+        if direction is None:
+            self.logger.error("[EXEC][%s] Signal missing direction attribute", tag)
+            return PlacementResult(
+                order_id=None,
+                success=False,
+                rejection_code=None,
+                rejection_message="Signal missing direction attribute",
+            )
+        direction = direction.upper()
 
         self.logger.info(
             "[EXEC][%s] Placing %s bracket: entry=%.4f stop=%.4f shares=%d",

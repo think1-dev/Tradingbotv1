@@ -263,7 +263,21 @@ class GapManager:
         candidates = []
 
         for sig in signals:
-            direction = (getattr(sig, "direction", None) or "LONG").upper()
+            # Direction is required - skip signal if missing
+            direction = getattr(sig, "direction", None)
+            if direction is None:
+                self.logger.warning(
+                    "[GAP] Skipping signal for %s - missing direction attribute",
+                    sig.symbol,
+                )
+                continue
+            direction = direction.upper()
+            if direction not in ("LONG", "SHORT"):
+                self.logger.warning(
+                    "[GAP] Skipping signal for %s - invalid direction: %s",
+                    sig.symbol, direction,
+                )
+                continue
 
             # Day LONG: needs gap DOWN (open <= entry)
             # Day SHORT: needs gap UP (open >= entry)
