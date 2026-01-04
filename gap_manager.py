@@ -29,6 +29,7 @@ from typing import TYPE_CHECKING, Dict, List, Optional, Any, Tuple
 from zoneinfo import ZoneInfo
 
 from time_utils import now_pt
+from execution import PlacementResult, SHORTABLE_ERROR_CODES
 
 if TYPE_CHECKING:
     from ib_insync import IB
@@ -416,15 +417,15 @@ class GapManager:
         )
 
         # Place single-leg MKT order (stop/timed added after fill)
-        order_id = self._place_gap_market_order(candidate, is_day)
+        result = self._place_gap_market_order(candidate, is_day)
 
-        if order_id is not None:
+        if result.success and result.order_id is not None:
             self.logger.warning(
                 "[GAP][TRIGGER] %s %s on %s - MKT order %d placed (UNPROTECTED until fill)",
                 candidate.signal_type,
                 candidate.direction,
                 symbol,
-                order_id,
+                result.order_id,
             )
             # Mark signal as triggered
             self._mark_signal_triggered(symbol, candidate.strategy_id, runtimes)
@@ -432,36 +433,59 @@ class GapManager:
             # Link re-entry candidates to this gap Day order
             if is_day and reentry_candidate_ids and self.reentry_manager is not None:
                 for cid in reentry_candidate_ids:
-                    self.reentry_manager.link_day_trade(cid, order_id)
+                    self.reentry_manager.link_day_trade(cid, result.order_id)
         else:
             self.logger.warning(
-                "[GAP][FAIL] %s %s on %s - MKT order placement failed",
+                "[GAP][FAIL] %s %s on %s - MKT order placement failed (code=%s)",
                 candidate.signal_type,
                 candidate.direction,
                 symbol,
+                result.rejection_code,
             )
             # Unmark signal (placement failed, allow retry or other entry path)
             self.state_mgr.signal_cache.mark_signal_filled(
                 today, symbol, candidate.strategy_id, signal_type, filled=False
             )
 
-            # Clean up re-entry candidates
-            if reentry_candidate_ids and self.reentry_manager is not None:
+            # Check for shortable rejection on Day SHORT gap with re-entry candidates
+            if (
+                is_day
+                and candidate.direction == "SHORT"
+                and result.is_shortable_rejection
+                and reentry_candidate_ids
+                and self.reentry_manager is not None
+            ):
+                # Enable ghost mode instead of blocking
                 for cid in reentry_candidate_ids:
-                    try:
-                        self.reentry_manager.drop_candidate(cid, "gap_trade_failed")
-                    except Exception as exc:
-                        self.logger.error(
-                            "[GAP] Failed to drop candidate %s: %s", cid, exc
+                    reentry_candidate = self.reentry_manager.candidates.get(cid)
+                    if reentry_candidate is not None:
+                        self.reentry_manager.enable_ghost_mode(
+                            candidate_id=cid,
+                            day_short_stop=candidate.original_stop,  # Day SHORT stop
+                            swing_long_stop=reentry_candidate.original_stop,  # Swing LONG stop
                         )
+                        self.logger.info(
+                            "[GAP][GHOST] Day SHORT gap rejected (shortable) - enabled ghost mode for %s",
+                            cid,
+                        )
+            else:
+                # Non-shortable rejection or no re-entry candidates - block and drop
+                if reentry_candidate_ids and self.reentry_manager is not None:
+                    for cid in reentry_candidate_ids:
+                        try:
+                            self.reentry_manager.drop_candidate(cid, "gap_trade_failed")
+                        except Exception as exc:
+                            self.logger.error(
+                                "[GAP] Failed to drop candidate %s: %s", cid, exc
+                            )
 
-            # Block symbol+strategy
-            self.state_mgr.blocked.block_for_week(symbol, candidate.strategy_id, today)
-            self.state_mgr.blocked.block_for_day(symbol, candidate.strategy_id, today)
+                # Block symbol+strategy
+                self.state_mgr.blocked.block_for_week(symbol, candidate.strategy_id, today)
+                self.state_mgr.blocked.block_for_day(symbol, candidate.strategy_id, today)
 
             self._mark_signal_failed(symbol, candidate.strategy_id, runtimes)
 
-        return order_id
+        return result.order_id
 
     def _check_gap_condition(
         self,
@@ -620,11 +644,14 @@ class GapManager:
         self,
         candidate: GapCandidate,
         is_day: bool,
-    ) -> Optional[int]:
+    ) -> PlacementResult:
         """
         Place a single-leg MKT order for a gap trade.
 
         Stop and timed orders will be added after fill via complete_gap_bracket().
+
+        Returns:
+            PlacementResult with order_id on success, rejection info on failure.
         """
         from ib_insync import Order
         from orders import make_stock_contract
@@ -635,7 +662,15 @@ class GapManager:
             qualified = self.ib.qualifyContracts(contract)
             if not qualified:
                 self.logger.error("[GAP] Failed to qualify contract for %s", candidate.symbol)
-                return None
+                return PlacementResult(
+                    order_id=None,
+                    success=False,
+                    rejection_code=None,
+                    rejection_message="Failed to qualify contract",
+                )
+
+            # Clear any previous error before placement
+            self.executor._get_last_error()
 
             # Create MKT order
             action = "BUY" if candidate.direction == "LONG" else "SELL"
@@ -652,7 +687,24 @@ class GapManager:
             order.orderId = order_id
 
             # Place order
-            self.ib.placeOrder(contract, order)
+            trade = self.ib.placeOrder(contract, order)
+
+            # Wait briefly for IBKR response
+            self.ib.sleep(0.3)
+
+            # Check if order was rejected
+            if trade.orderStatus.status in ("Cancelled", "Inactive", "ApiCancelled"):
+                error_code, error_msg = self.executor._get_last_error()
+                self.logger.warning(
+                    "[GAP] MKT order rejected: %s %s code=%s msg=%s",
+                    action, candidate.symbol, error_code, error_msg,
+                )
+                return PlacementResult(
+                    order_id=None,
+                    success=False,
+                    rejection_code=error_code,
+                    rejection_message=error_msg,
+                )
 
             self.logger.info(
                 "[GAP] MKT order placed: %s %s %d shares (order_id=%d)",
@@ -700,14 +752,24 @@ class GapManager:
                     timed_order_id=None,
                 )
 
-            return order_id
+            return PlacementResult(
+                order_id=order_id,
+                success=True,
+                rejection_code=None,
+                rejection_message=None,
+            )
 
         except Exception as exc:
             self.logger.error(
                 "[GAP] Error placing MKT order for %s: %s",
                 candidate.symbol, exc,
             )
-            return None
+            return PlacementResult(
+                order_id=None,
+                success=False,
+                rejection_code=None,
+                rejection_message=str(exc),
+            )
 
     def _place_stop_and_timed(
         self,
