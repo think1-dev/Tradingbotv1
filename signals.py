@@ -152,6 +152,15 @@ class CsvLoader:
 
                     direction = self._infer_direction_from_strategy(strategy)
 
+                    # Validate direction
+                    if direction is None or direction not in ("LONG", "SHORT"):
+                        skipped_rows += 1
+                        self._log(
+                            "SKIP",
+                            f"Day {symbol} (strategy={strategy}) invalid or missing direction={direction}; skipping.",
+                        )
+                        continue
+
                     # Position sizing
                     shares = int(DAY_BUDGET_PER_POSITION // entry_price)
                     if shares <= 0:
