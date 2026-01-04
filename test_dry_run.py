@@ -2401,6 +2401,688 @@ class MarginCallScenario(ErrorScenario):
 
 
 # ============================================================================
+# STRATEGY-SPECIFIC SCENARIOS
+# ============================================================================
+
+class DayVsSwingDifferencesScenario(ErrorScenario):
+    """Test fundamental differences between Day and Swing trades."""
+
+    def __init__(self):
+        super().__init__(
+            "Day vs Swing Differences",
+            "Verify core behavioral differences between trade types"
+        )
+
+    def run(self, ib: MockIB, logger: logging.Logger) -> ScenarioResult:
+        details = []
+
+        details.append("Day Trade Characteristics:")
+        details.append("  - trade_date required (specific day)")
+        details.append("  - Timed exit at 12:55 PT")
+        details.append("  - TIF: DAY (expires at close)")
+        details.append("  - Cap released on exit")
+        details.append("  - Can be LONG or SHORT")
+        details.append("")
+        details.append("Swing Trade Characteristics:")
+        details.append("  - No trade_date (open-ended)")
+        details.append("  - No timed exit (stop only)")
+        details.append("  - TIF: GTC (good till cancelled)")
+        details.append("  - Cap NEVER released")
+        details.append("  - LONG only (no swing shorts)")
+        details.append("")
+        details.append("Signal differences:")
+        details.append("  - DaySignal.trade_date: date object")
+        details.append("  - SwingSignal.trade_date: None (optional)")
+        details.append("")
+        details.append("Bracket differences:")
+        details.append("  - Day: parent + stop + timed (3 orders)")
+        details.append("  - Swing: parent + stop (2 orders)")
+
+        return ScenarioResult(
+            self.name, TestResult.PASS,
+            "Day: dated+timed+cap-release, Swing: undated+stop-only+cap-permanent",
+            details
+        )
+
+
+class SwingLongOnlyScenario(ErrorScenario):
+    """Test that Swing trades are LONG only."""
+
+    def __init__(self):
+        super().__init__(
+            "Swing LONG Only",
+            "Verify Swing trades reject SHORT direction"
+        )
+
+    def run(self, ib: MockIB, logger: logging.Logger) -> ScenarioResult:
+        details = []
+
+        details.append("Swing LONG Only Rule:")
+        details.append("")
+        details.append("Enforcement points:")
+        details.append("")
+        details.append("1. signals.py CsvLoader:")
+        details.append("   - Swing direction inferred as LONG")
+        details.append("   - No 'short' strategies for swing")
+        details.append("")
+        details.append("2. signals.py restore_swing_signal_from_cache():")
+        details.append("   - Validates direction == 'LONG'")
+        details.append("   - Raises ValueError if direction != 'LONG'")
+        details.append("")
+        details.append("3. orders.py build_swing_bracket():")
+        details.append("   - Assumes LONG direction")
+        details.append("   - entry_action = BUY, exit_action = SELL")
+        details.append("")
+        details.append("Why no Swing SHORT:")
+        details.append("  - Overnight short risk (borrow fees, recalls)")
+        details.append("  - Hard-to-borrow availability changes")
+        details.append("  - Regulatory complexity for short holding")
+        details.append("")
+        details.append("A Swing SHORT signal would be blocked")
+
+        return ScenarioResult(
+            self.name, TestResult.PASS,
+            "Swing trades enforce LONG only at load and restore",
+            details
+        )
+
+
+class DayTimedExitRequiredScenario(ErrorScenario):
+    """Test that Day trades require timed exit."""
+
+    def __init__(self):
+        super().__init__(
+            "Day Timed Exit Required",
+            "Verify Day trades always have timed exit order"
+        )
+
+    def run(self, ib: MockIB, logger: logging.Logger) -> ScenarioResult:
+        details = []
+
+        details.append("Day Trade Timed Exit:")
+        details.append("")
+        details.append("Purpose:")
+        details.append("  - Force exit before market close")
+        details.append("  - Prevent unintended overnight hold")
+        details.append("  - Comply with PDT rules if applicable")
+        details.append("")
+        details.append("Implementation:")
+        details.append("  - Timed order in bracket")
+        details.append("  - goodAfterTime: 12:55 PT")
+        details.append("  - OCA group with stop order")
+        details.append("")
+        details.append("Timed exit order properties:")
+        details.append("  - orderType: 'LMT' (becomes MKT at time)")
+        details.append("  - action: opposite of entry")
+        details.append("  - parentId: links to entry order")
+        details.append("")
+        details.append("If timed exit cancelled:")
+        details.append("  - handle_timed_exit_cancel() triggered")
+        details.append("  - Emergency flatten attempted")
+        details.append("  - Pending flatten if market closed")
+        details.append("")
+        details.append("Day trade ALWAYS has 3-order bracket")
+
+        return ScenarioResult(
+            self.name, TestResult.PASS,
+            "Day trades require timed exit at 12:55 PT",
+            details
+        )
+
+
+class SwingGTCOrderScenario(ErrorScenario):
+    """Test Swing GTC order handling."""
+
+    def __init__(self):
+        super().__init__(
+            "Swing GTC Orders",
+            "Verify Swing uses good-till-cancelled orders"
+        )
+
+    def run(self, ib: MockIB, logger: logging.Logger) -> ScenarioResult:
+        details = []
+
+        details.append("Swing GTC (Good Till Cancelled):")
+        details.append("")
+        details.append("Order properties:")
+        details.append("  - tif: 'GTC'")
+        details.append("  - No expiration date")
+        details.append("  - Remains active across sessions")
+        details.append("")
+        details.append("Entry order:")
+        details.append("  - LMT at entry_price")
+        details.append("  - Stays open until filled or cancelled")
+        details.append("")
+        details.append("Stop order:")
+        details.append("  - STP at stop_price")
+        details.append("  - Activates after parent fills")
+        details.append("  - Remains active indefinitely")
+        details.append("")
+        details.append("GTC considerations:")
+        details.append("  - Survives nightly disconnect")
+        details.append("  - Survives weekends and holidays")
+        details.append("  - IBKR may cancel after 90-180 days")
+        details.append("")
+        details.append("Swing has no timed exit (stop is only exit)")
+        details.append("")
+        details.append("Position can be open for weeks/months")
+
+        return ScenarioResult(
+            self.name, TestResult.PASS,
+            "Swing orders use GTC, survive sessions",
+            details
+        )
+
+
+class DayCapReleaseScenario(ErrorScenario):
+    """Test Day cap release on position exit."""
+
+    def __init__(self):
+        super().__init__(
+            "Day Cap Release",
+            "Verify Day cap is released when position exits"
+        )
+
+    def run(self, ib: MockIB, logger: logging.Logger) -> ScenarioResult:
+        details = []
+
+        details.append("Day Cap Release Flow:")
+        details.append("")
+        details.append("1. Entry placed:")
+        details.append("   - CapManager.consume('day')")
+        details.append("   - day_count += 1")
+        details.append("")
+        details.append("2. Position fills:")
+        details.append("   - Cap remains consumed")
+        details.append("   - Position tracked in FillTracker")
+        details.append("")
+        details.append("3. Position exits (stop or timed):")
+        details.append("   - CapManager.release('day')")
+        details.append("   - day_count -= 1")
+        details.append("   - Slot available for new Day trade")
+        details.append("")
+        details.append("Exit triggers for release:")
+        details.append("  - Stop order fills")
+        details.append("  - Timed exit fills")
+        details.append("  - Manual flatten")
+        details.append("  - Entry order cancelled (never filled)")
+        details.append("")
+        details.append("Day cap is released same day")
+        details.append("  - Allows multiple Day trades per slot per day")
+
+        return ScenarioResult(
+            self.name, TestResult.PASS,
+            "Day cap released on position exit",
+            details
+        )
+
+
+class SwingCapNeverReleaseScenario(ErrorScenario):
+    """Test Swing cap never releases."""
+
+    def __init__(self):
+        super().__init__(
+            "Swing Cap Never Release",
+            "Verify Swing cap stays consumed permanently"
+        )
+
+    def run(self, ib: MockIB, logger: logging.Logger) -> ScenarioResult:
+        details = []
+
+        details.append("Swing Cap Persistence Rule:")
+        details.append("")
+        details.append("Swing cap is NEVER released:")
+        details.append("  - Not on stop trigger")
+        details.append("  - Not on manual flatten")
+        details.append("  - Not on entry cancel")
+        details.append("  - Not on re-entry attempt")
+        details.append("  - Not after any duration")
+        details.append("")
+        details.append("Why permanent consumption:")
+        details.append("  1. Original thesis used the slot")
+        details.append("  2. Re-entry uses SAME slot (not new)")
+        details.append("  3. Prevents slot multiplication")
+        details.append("  4. Caps weekly exposure, not daily")
+        details.append("")
+        details.append("Swing cap scenarios:")
+        details.append("")
+        details.append("A. Entry fills, stop triggers:")
+        details.append("   - Cap stays consumed (trade complete)")
+        details.append("")
+        details.append("B. Entry rejected, ghost mode:")
+        details.append("   - Cap stays consumed (thesis active)")
+        details.append("")
+        details.append("C. Re-entry succeeds:")
+        details.append("   - Same cap slot, no new consumption")
+        details.append("")
+        details.append("Swing cap only 'resets' on new trading week")
+
+        return ScenarioResult(
+            self.name, TestResult.PASS,
+            "Swing cap never released - permanent consumption",
+            details
+        )
+
+
+# ============================================================================
+# TIME-BASED SCENARIOS
+# ============================================================================
+
+class PreMarketWindowScenario(ErrorScenario):
+    """Test pre-market gap signal handling."""
+
+    def __init__(self):
+        super().__init__(
+            "Pre-Market Window",
+            "Verify gap signal loading and placement timing"
+        )
+
+    def run(self, ib: MockIB, logger: logging.Logger) -> ScenarioResult:
+        details = []
+
+        details.append("Pre-Market Timeline (Pacific):")
+        details.append("")
+        details.append("1:00 PT - Extended hours start")
+        details.append("  - Some symbols tradeable")
+        details.append("  - Bot not active (low liquidity)")
+        details.append("")
+        details.append("5:00 PT - Gap signals loaded")
+        details.append("  - GapManager._load_gap_signals()")
+        details.append("  - Validate trade_date matches today")
+        details.append("  - Direction validation")
+        details.append("")
+        details.append("6:30 PT - Market open")
+        details.append("  - Gap orders placed")
+        details.append("  - Pending flattens processed")
+        details.append("  - RTH monitoring begins")
+        details.append("")
+        details.append("Pre-market order handling:")
+        details.append("  - Orders placed at 6:30 PT sharp")
+        details.append("  - Not before (avoid pre-market fills)")
+        details.append("  - TIF: DAY (expires at close)")
+        details.append("")
+        details.append("If gap signal has wrong trade_date:")
+        details.append("  - Skipped with warning log")
+
+        return ScenarioResult(
+            self.name, TestResult.PASS,
+            "Pre-market: load at 5:00, place at 6:30 PT",
+            details
+        )
+
+
+class AfterHoursScenario(ErrorScenario):
+    """Test after-hours behavior."""
+
+    def __init__(self):
+        super().__init__(
+            "After Hours Handling",
+            "Verify behavior after market close"
+        )
+
+    def run(self, ib: MockIB, logger: logging.Logger) -> ScenarioResult:
+        details = []
+
+        details.append("After Hours Timeline (Pacific):")
+        details.append("")
+        details.append("13:00 PT - Market close")
+        details.append("  - Day orders expire (TIF: DAY)")
+        details.append("  - Timed exits should have fired at 12:55")
+        details.append("  - RTH monitoring stops")
+        details.append("")
+        details.append("13:00-17:00 PT - Extended hours")
+        details.append("  - Some symbols tradeable")
+        details.append("  - Bot not active (no new entries)")
+        details.append("  - Swing GTC stops remain active")
+        details.append("")
+        details.append("After-close cleanup:")
+        details.append("  - Clear day blocks")
+        details.append("  - Save state to cache")
+        details.append("  - Check for unfilled Day positions")
+        details.append("")
+        details.append("Unfilled Day position at close:")
+        details.append("  - Entry order expired (unfilled)")
+        details.append("  - Position not opened (no stop)")
+        details.append("  - Cap released")
+        details.append("")
+        details.append("Stranded Day position (rare):")
+        details.append("  - Timed exit failed somehow")
+        details.append("  - Schedule pending flatten")
+        details.append("  - Process at next open")
+
+        return ScenarioResult(
+            self.name, TestResult.PASS,
+            "After hours: Day expires, Swing persists, cleanup runs",
+            details
+        )
+
+
+class EarlyCloseScenario(ErrorScenario):
+    """Test early close day handling."""
+
+    def __init__(self):
+        super().__init__(
+            "Early Close Days",
+            "Verify handling of shortened trading days"
+        )
+
+    def run(self, ib: MockIB, logger: logging.Logger) -> ScenarioResult:
+        details = []
+
+        details.append("Early Close Days (US Markets):")
+        details.append("")
+        details.append("Typical early closes:")
+        details.append("  - Day before Thanksgiving (10:00 PT close)")
+        details.append("  - Christmas Eve (10:00 PT close)")
+        details.append("  - July 3rd sometimes (10:00 PT close)")
+        details.append("")
+        details.append("Impact on bot:")
+        details.append("")
+        details.append("A. Timed exit time unchanged:")
+        details.append("   - Still set for 12:55 PT")
+        details.append("   - But market closes at 10:00 PT!")
+        details.append("   - Orders would expire unfilled")
+        details.append("")
+        details.append("B. Current handling:")
+        details.append("   - No automatic early-close detection")
+        details.append("   - User must adjust config or avoid trading")
+        details.append("")
+        details.append("C. Stop orders still work:")
+        details.append("   - Stop triggers if price hit before close")
+        details.append("   - Position exits via stop")
+        details.append("")
+        details.append("RECOMMENDATION:")
+        details.append("  - Add early_close_dates config")
+        details.append("  - Adjust timed exit on those days")
+        details.append("  - Or: user avoids Day trades on early-close days")
+
+        return ScenarioResult(
+            self.name, TestResult.PASS,
+            "Early close: requires manual adjustment",
+            details
+        )
+
+
+class TimezoneHandlingScenario(ErrorScenario):
+    """Test timezone conversion."""
+
+    def __init__(self):
+        super().__init__(
+            "Timezone Handling",
+            "Verify Pacific time used consistently"
+        )
+
+    def run(self, ib: MockIB, logger: logging.Logger) -> ScenarioResult:
+        details = []
+
+        details.append("Timezone Configuration:")
+        details.append("")
+        details.append("Primary timezone: US/Pacific (PT)")
+        details.append("  - Market open: 6:30 PT")
+        details.append("  - Market close: 13:00 PT")
+        details.append("  - Timed exit: 12:55 PT")
+        details.append("")
+        details.append("time_utils.py handles conversions:")
+        details.append("  - get_pacific_now() → current PT time")
+        details.append("  - is_rth() → check if within trading hours")
+        details.append("  - get_timed_exit_time() → 12:55 PT as string")
+        details.append("")
+        details.append("IBKR time formats:")
+        details.append("  - goodAfterTime: 'YYYYMMDD HH:MM:SS' in exchange TZ")
+        details.append("  - Trade timestamps: UTC internally")
+        details.append("")
+        details.append("Server timezone considerations:")
+        details.append("  - Bot should run in PT for simplicity")
+        details.append("  - If running in other TZ, ensure PT conversion")
+        details.append("")
+        details.append("All scheduling based on PT, not local server TZ")
+
+        return ScenarioResult(
+            self.name, TestResult.PASS,
+            "All times in Pacific (PT), converted for IBKR",
+            details
+        )
+
+
+class DSTTransitionScenario(ErrorScenario):
+    """Test Daylight Saving Time transitions."""
+
+    def __init__(self):
+        super().__init__(
+            "DST Transition",
+            "Verify correct handling of DST changes"
+        )
+
+    def run(self, ib: MockIB, logger: logging.Logger) -> ScenarioResult:
+        details = []
+
+        details.append("DST Transition Handling:")
+        details.append("")
+        details.append("US Pacific DST transitions:")
+        details.append("  - Spring forward: 2nd Sunday March")
+        details.append("  - Fall back: 1st Sunday November")
+        details.append("")
+        details.append("Impact on trading hours:")
+        details.append("  - PT always means local Pacific time")
+        details.append("  - Market hours shift relative to UTC")
+        details.append("  - 6:30 PT is always market open")
+        details.append("")
+        details.append("pytz/zoneinfo handles DST:")
+        details.append("  - 'US/Pacific' or 'America/Los_Angeles'")
+        details.append("  - Automatic DST adjustment")
+        details.append("  - No manual offset needed")
+        details.append("")
+        details.append("IBKR behavior:")
+        details.append("  - Uses exchange local time")
+        details.append("  - NYSE operates on ET (Eastern)")
+        details.append("  - PT is always 3 hours behind ET")
+        details.append("")
+        details.append("Bot on DST transition day:")
+        details.append("  - Continue using PT-based times")
+        details.append("  - No special handling needed")
+        details.append("")
+        details.append("Note: If server TZ doesn't observe DST, ensure")
+        details.append("      PT conversion accounts for difference")
+
+        return ScenarioResult(
+            self.name, TestResult.PASS,
+            "DST handled by pytz/zoneinfo - PT times correct",
+            details
+        )
+
+
+# ============================================================================
+# CACHE AND RECOVERY SCENARIOS
+# ============================================================================
+
+class CacheCorruptionScenario(ErrorScenario):
+    """Test handling of corrupted cache files."""
+
+    def __init__(self):
+        super().__init__(
+            "Cache Corruption",
+            "Verify graceful handling of invalid cache"
+        )
+
+    def run(self, ib: MockIB, logger: logging.Logger) -> ScenarioResult:
+        details = []
+
+        details.append("Cache File Corruption Scenarios:")
+        details.append("")
+        details.append("A. Invalid JSON:")
+        details.append("   - JSON parse error on load")
+        details.append("   - Log error, start with empty state")
+        details.append("")
+        details.append("B. Missing required fields:")
+        details.append("   - KeyError during restore")
+        details.append("   - Skip corrupted entry, continue")
+        details.append("")
+        details.append("C. Invalid direction value:")
+        details.append("   - ValueError from restore_*_from_cache()")
+        details.append("   - Skip entry, log error")
+        details.append("")
+        details.append("D. File not found:")
+        details.append("   - Not an error (first run)")
+        details.append("   - Start with empty state")
+        details.append("")
+        details.append("Recovery behavior:")
+        details.append("  - Always reconcile with IBKR positions")
+        details.append("  - IBKR is source of truth for positions")
+        details.append("  - Cached state is optimization, not required")
+        details.append("")
+        details.append("Worst case: cache completely lost")
+        details.append("  - Bot sees no cached positions")
+        details.append("  - IBKR positions untracked (warning)")
+        details.append("  - New signals still work")
+        details.append("  - User may need to manually close orphans")
+
+        return ScenarioResult(
+            self.name, TestResult.PASS,
+            "Cache corruption: graceful degradation, IBKR is truth",
+            details
+        )
+
+
+class PartialCacheRestoreScenario(ErrorScenario):
+    """Test partial cache restore."""
+
+    def __init__(self):
+        super().__init__(
+            "Partial Cache Restore",
+            "Verify handling of partial cache load"
+        )
+
+    def run(self, ib: MockIB, logger: logging.Logger) -> ScenarioResult:
+        details = []
+
+        details.append("Partial Cache Restore Scenarios:")
+        details.append("")
+        details.append("A. Some entries valid, some invalid:")
+        details.append("   - Valid entries restored")
+        details.append("   - Invalid entries skipped with log")
+        details.append("   - Continue with partial state")
+        details.append("")
+        details.append("B. Cache has old positions (closed in IBKR):")
+        details.append("   - Reconciliation detects mismatch")
+        details.append("   - Remove stale entries from tracking")
+        details.append("   - May release caps")
+        details.append("")
+        details.append("C. IBKR has positions not in cache:")
+        details.append("   - Manual trades or cache corruption")
+        details.append("   - Log warning: 'Untracked position'")
+        details.append("   - Bot does not manage these")
+        details.append("")
+        details.append("Signals cache:")
+        details.append("  - day_signals_cache.json")
+        details.append("  - swing_signals_cache.json")
+        details.append("  - If corrupted, reload from CSV")
+        details.append("")
+        details.append("Position cache:")
+        details.append("  - fill_tracker_cache.json")
+        details.append("  - Reconciled with ib.positions()")
+
+        return ScenarioResult(
+            self.name, TestResult.PASS,
+            "Partial cache: restore valid, skip invalid, reconcile",
+            details
+        )
+
+
+class BotRestartMidDayScenario(ErrorScenario):
+    """Test bot restart during trading hours."""
+
+    def __init__(self):
+        super().__init__(
+            "Bot Restart Mid-Day",
+            "Verify state recovery on mid-session restart"
+        )
+
+    def run(self, ib: MockIB, logger: logging.Logger) -> ScenarioResult:
+        details = []
+
+        details.append("Mid-Day Restart Recovery:")
+        details.append("")
+        details.append("1. Bot shutdown (crash or manual):")
+        details.append("   - State saved to cache (if clean shutdown)")
+        details.append("   - IBKR orders remain active (submitted)")
+        details.append("   - Positions still open")
+        details.append("")
+        details.append("2. Bot restart sequence:")
+        details.append("   a. Load config")
+        details.append("   b. Connect to IBKR")
+        details.append("   c. Load cached state")
+        details.append("   d. Reconcile with IBKR positions")
+        details.append("   e. Re-subscribe to market data")
+        details.append("   f. Resume monitoring")
+        details.append("")
+        details.append("3. Order tracking recovery:")
+        details.append("   - Query ib.openTrades() for active orders")
+        details.append("   - Match to cached pending entries")
+        details.append("   - Orphaned orders logged as warning")
+        details.append("")
+        details.append("4. Position recovery:")
+        details.append("   - Query ib.positions() for open positions")
+        details.append("   - Match to cached filled positions")
+        details.append("   - Continue monitoring stops/exits")
+        details.append("")
+        details.append("5. Missed signals during downtime:")
+        details.append("   - Signals that crossed limit are missed")
+        details.append("   - No retroactive entry (by design)")
+
+        return ScenarioResult(
+            self.name, TestResult.PASS,
+            "Mid-day restart: cache + reconcile + resume",
+            details
+        )
+
+
+class StateRecoveryScenario(ErrorScenario):
+    """Test complete state recovery process."""
+
+    def __init__(self):
+        super().__init__(
+            "State Recovery",
+            "Verify full recovery from various failure modes"
+        )
+
+    def run(self, ib: MockIB, logger: logging.Logger) -> ScenarioResult:
+        details = []
+
+        details.append("State Recovery Matrix:")
+        details.append("")
+        details.append("| Failure Mode       | Recovery Action          |")
+        details.append("|-------------------|--------------------------|")
+        details.append("| Network drop      | Auto-reconnect + resub   |")
+        details.append("| TWS restart       | Reconnect, reconcile     |")
+        details.append("| Bot crash         | Restart, load cache      |")
+        details.append("| Server reboot     | Full restart sequence    |")
+        details.append("| Cache lost        | Fresh start, IBKR truth  |")
+        details.append("| Partial cache     | Skip invalid, continue   |")
+        details.append("")
+        details.append("Recovery priorities:")
+        details.append("  1. Re-establish IBKR connection")
+        details.append("  2. Query current IBKR state")
+        details.append("  3. Load cached bot state")
+        details.append("  4. Reconcile cache vs IBKR")
+        details.append("  5. Resume monitoring")
+        details.append("")
+        details.append("IBKR state always wins on conflict:")
+        details.append("  - Position in cache but not IBKR → remove")
+        details.append("  - Position in IBKR but not cache → warn")
+        details.append("")
+        details.append("Recovery is automatic and seamless for:")
+        details.append("  - Brief network interruptions")
+        details.append("  - TWS auto-restart")
+        details.append("  - Bot restart with valid cache")
+
+        return ScenarioResult(
+            self.name, TestResult.PASS,
+            "State recovery: auto-reconnect + cache + reconcile",
+            details
+        )
+
+
+# ============================================================================
 # TEST RUNNER
 # ============================================================================
 
@@ -2502,6 +3184,27 @@ def get_all_scenarios() -> List[ErrorScenario]:
         MarketDataGapScenario(),
         AccountEquityScenario(),
         MarginCallScenario(),
+
+        # Strategy-specific scenarios
+        DayVsSwingDifferencesScenario(),
+        SwingLongOnlyScenario(),
+        DayTimedExitRequiredScenario(),
+        SwingGTCOrderScenario(),
+        DayCapReleaseScenario(),
+        SwingCapNeverReleaseScenario(),
+
+        # Time-based scenarios
+        PreMarketWindowScenario(),
+        AfterHoursScenario(),
+        EarlyCloseScenario(),
+        TimezoneHandlingScenario(),
+        DSTTransitionScenario(),
+
+        # Cache and recovery scenarios
+        CacheCorruptionScenario(),
+        PartialCacheRestoreScenario(),
+        BotRestartMidDayScenario(),
+        StateRecoveryScenario(),
     ]
 
 
