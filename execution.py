@@ -223,6 +223,17 @@ class OrderExecutor:
                 timed_id,
             )
 
+            # Wait briefly for IBKR to process and verify order wasn't rejected
+            self.ib.sleep(0.3)
+
+            # Check if parent order was rejected after submission
+            if parent_trade.orderStatus.status in ("Cancelled", "Inactive", "ApiCancelled"):
+                self.logger.warning(
+                    "[EXEC][%s] Parent order rejected after submission: status=%s",
+                    tag, parent_trade.orderStatus.status,
+                )
+                return None, None, None
+
             return parent_trade, stop_trade, timed_trade
 
         except Exception as exc:
@@ -645,15 +656,13 @@ class OrderExecutor:
         )
 
         # Attempt to flatten (will retry with backoff, schedule for next day if EOD)
+        # NOTE: flatten_position() already removes from FillTracker on success
         flatten_success, cleanup_success = self.flatten_position_with_retry(instruction)
         if flatten_success:
             self.logger.info(
                 "[EXEC] Successfully flattened after timed exit cancel: %s %s (cleanup=%s)",
                 position.symbol, position.strategy_id, cleanup_success,
             )
-            # Remove from fill tracker since position is closed
-            if self.fill_tracker is not None:
-                self.fill_tracker.remove_filled_position(position.parent_order_id)
 
     def process_pending_flattens(self) -> None:
         """
