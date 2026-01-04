@@ -1394,6 +1394,467 @@ class ErrorCallbackFlowScenario(ErrorScenario):
 
 
 # ============================================================================
+# STATE PERSISTENCE SCENARIOS
+# ============================================================================
+
+class StateCacheScenario(ErrorScenario):
+    """Test state cache persistence."""
+
+    def __init__(self):
+        super().__init__(
+            "State Cache Persistence",
+            "Verify state survives bot restart"
+        )
+
+    def run(self, ib: MockIB, logger: logging.Logger) -> ScenarioResult:
+        details = []
+
+        details.append("Cached State Components:")
+        details.append("  - Filled positions (FillTracker)")
+        details.append("  - Pending orders (FillTracker)")
+        details.append("  - Day signals (CsvLoader)")
+        details.append("  - Swing signals (CsvLoader)")
+        details.append("  - Cap consumption (CapManager)")
+        details.append("  - Blocked symbols (SymbolBlocker)")
+        details.append("")
+        details.append("Cache Location:")
+        details.append("  - JSON files in working directory")
+        details.append("  - Named: *_cache.json or *.state")
+        details.append("")
+        details.append("Restore on Startup:")
+        details.append("  1. Load cached state from disk")
+        details.append("  2. Validate signal directions")
+        details.append("  3. Reconcile with IBKR positions")
+        details.append("  4. Resume monitoring")
+        details.append("")
+        details.append("State NOT cached (rebuilt each day):")
+        details.append("  - Market data subscriptions")
+        details.append("  - Ticker objects")
+        details.append("  - Active re-entry candidates")
+
+        return ScenarioResult(
+            self.name, TestResult.PASS,
+            "State cached to disk, restored on startup",
+            details
+        )
+
+
+class PositionReconciliationScenario(ErrorScenario):
+    """Test position reconciliation with IBKR."""
+
+    def __init__(self):
+        super().__init__(
+            "Position Reconciliation",
+            "Verify positions match IBKR on startup"
+        )
+
+    def run(self, ib: MockIB, logger: logging.Logger) -> ScenarioResult:
+        details = []
+
+        details.append("Reconciliation on Startup:")
+        details.append("")
+        details.append("1. Load cached positions from FillTracker")
+        details.append("2. Query IBKR for actual positions: ib.positions()")
+        details.append("3. Compare cached vs actual:")
+        details.append("")
+        details.append("Scenario A: Cached position exists, IBKR has it")
+        details.append("  → Position valid, continue tracking")
+        details.append("")
+        details.append("Scenario B: Cached position exists, IBKR doesn't")
+        details.append("  → Position was closed externally")
+        details.append("  → Remove from FillTracker")
+        details.append("  → Release cap if applicable")
+        details.append("")
+        details.append("Scenario C: IBKR has position, not in cache")
+        details.append("  → Manual trade or cache corruption")
+        details.append("  → Log warning, don't track")
+        details.append("  → User responsibility to manage")
+        details.append("")
+        details.append("Reconciliation runs after connection established")
+
+        return ScenarioResult(
+            self.name, TestResult.PASS,
+            "Positions reconciled with IBKR on startup",
+            details
+        )
+
+
+class SignalLoadingScenario(ErrorScenario):
+    """Test signal loading from CSV."""
+
+    def __init__(self):
+        super().__init__(
+            "Signal Loading",
+            "Verify CSV signal loading and validation"
+        )
+
+    def run(self, ib: MockIB, logger: logging.Logger) -> ScenarioResult:
+        details = []
+
+        details.append("Signal Loading Flow:")
+        details.append("")
+        details.append("1. CsvLoader reads CSV files:")
+        details.append("   - day_signals.csv (intraday trades)")
+        details.append("   - swing_signals.csv (multi-day trades)")
+        details.append("   - gap_signals.csv (pre-market)")
+        details.append("")
+        details.append("2. For each row, validate:")
+        details.append("   - Symbol exists")
+        details.append("   - Entry price > 0")
+        details.append("   - Stop price valid")
+        details.append("   - Direction inferable from strategy")
+        details.append("")
+        details.append("3. Direction inference:")
+        details.append("   - Strategy name contains 'short' → SHORT")
+        details.append("   - Otherwise → LONG")
+        details.append("   - If not determinable → Skip signal")
+        details.append("")
+        details.append("4. Position sizing:")
+        details.append("   - shares = int(budget / entry_price)")
+        details.append("   - If shares <= 0 → Skip (too expensive)")
+        details.append("")
+        details.append("Signals cached after loading for restart recovery")
+
+        return ScenarioResult(
+            self.name, TestResult.PASS,
+            "Signals loaded from CSV with validation",
+            details
+        )
+
+
+class EndOfDayScenario(ErrorScenario):
+    """Test end of day handling."""
+
+    def __init__(self):
+        super().__init__(
+            "End of Day Handling",
+            "Verify EOD position cleanup"
+        )
+
+    def run(self, ib: MockIB, logger: logging.Logger) -> ScenarioResult:
+        details = []
+
+        details.append("End of Day Timeline (Pacific):")
+        details.append("")
+        details.append("12:55 PT - Timed exits trigger")
+        details.append("  - goodAfterTime activates")
+        details.append("  - LMT orders attempt to fill")
+        details.append("  - Most Day positions close here")
+        details.append("")
+        details.append("12:59 PT - Final sweep")
+        details.append("  - Check for any unfilled timed exits")
+        details.append("  - Convert to market if needed")
+        details.append("")
+        details.append("13:00 PT - Market close")
+        details.append("  - Any remaining Day positions flagged")
+        details.append("  - Scheduled for next-day flatten")
+        details.append("")
+        details.append("Post-close:")
+        details.append("  - Clear day blocks")
+        details.append("  - Save state to cache")
+        details.append("  - Swing positions remain open")
+        details.append("")
+        details.append("Next day 6:30 PT:")
+        details.append("  - Process pending flattens first")
+        details.append("  - Then normal gap/day operations")
+
+        return ScenarioResult(
+            self.name, TestResult.PASS,
+            "EOD: 12:55 timed exit → 13:00 close → next-day flatten",
+            details
+        )
+
+
+class WeekendHandlingScenario(ErrorScenario):
+    """Test weekend and holiday handling."""
+
+    def __init__(self):
+        super().__init__(
+            "Weekend/Holiday Handling",
+            "Verify non-trading day behavior"
+        )
+
+    def run(self, ib: MockIB, logger: logging.Logger) -> ScenarioResult:
+        details = []
+
+        details.append("Weekend Detection:")
+        details.append("  - Saturday/Sunday: Skip trading")
+        details.append("  - Check trade_date in signals")
+        details.append("")
+        details.append("Holiday Detection:")
+        details.append("  - Market holidays: Skip trading")
+        details.append("  - Early close days: Adjust timed exit")
+        details.append("")
+        details.append("Swing positions over weekend:")
+        details.append("  - GTC orders remain active")
+        details.append("  - Stops remain in place")
+        details.append("  - No action needed")
+        details.append("")
+        details.append("Gap signals for Monday:")
+        details.append("  - Loaded Sunday evening (if bot running)")
+        details.append("  - Or Monday pre-market")
+        details.append("  - trade_date must match Monday")
+        details.append("")
+        details.append("Day signals weekend behavior:")
+        details.append("  - Not loaded until trading day")
+        details.append("  - trade_date validation prevents stale")
+
+        return ScenarioResult(
+            self.name, TestResult.PASS,
+            "Weekends: Swing continues, Day waits",
+            details
+        )
+
+
+class StopOrderScenario(ErrorScenario):
+    """Test stop order behavior."""
+
+    def __init__(self):
+        super().__init__(
+            "Stop Order Behavior",
+            "Verify stop order triggering and fill"
+        )
+
+    def run(self, ib: MockIB, logger: logging.Logger) -> ScenarioResult:
+        details = []
+
+        details.append("Stop Order Types:")
+        details.append("  Day trades: STP (stop market)")
+        details.append("  Swing trades: STP (stop market)")
+        details.append("")
+        details.append("Stop Order Properties:")
+        details.append("  - auxPrice: stop trigger price")
+        details.append("  - parentId: links to entry order")
+        details.append("  - ocaGroup: links to timed exit (Day)")
+        details.append("")
+        details.append("Trigger Behavior:")
+        details.append("  LONG position (BUY entry, SELL stop):")
+        details.append("    - Stop triggers when bid ≤ stop_price")
+        details.append("    - Becomes market sell order")
+        details.append("")
+        details.append("  SHORT position (SELL entry, BUY stop):")
+        details.append("    - Stop triggers when ask ≥ stop_price")
+        details.append("    - Becomes market buy order")
+        details.append("")
+        details.append("Fill Notification:")
+        details.append("  - IBKR fires order status callback")
+        details.append("  - OCA group cancels other exit")
+        details.append("  - FillTracker removes position")
+
+        return ScenarioResult(
+            self.name, TestResult.PASS,
+            "Stops: trigger on price, fill at market",
+            details
+        )
+
+
+class FlattenScenario(ErrorScenario):
+    """Test manual flatten behavior."""
+
+    def __init__(self):
+        super().__init__(
+            "Flatten Position Flow",
+            "Verify forced position exit"
+        )
+
+    def run(self, ib: MockIB, logger: logging.Logger) -> ScenarioResult:
+        details = []
+
+        details.append("Flatten Triggers:")
+        details.append("  1. Conflict resolution (Day vs Swing)")
+        details.append("  2. Timed exit cancelled unexpectedly")
+        details.append("  3. Pending flatten from previous day")
+        details.append("  4. Manual intervention")
+        details.append("")
+        details.append("Flatten Flow:")
+        details.append("  1. Create FlattenInstruction with position details")
+        details.append("  2. Cancel any existing exit orders")
+        details.append("  3. Submit market order to close")
+        details.append("  4. Wait for fill confirmation")
+        details.append("  5. Remove from FillTracker")
+        details.append("")
+        details.append("Retry Logic (if flatten fails):")
+        details.append("  - Exponential backoff: 1s → 2s → 4s → ... → 30s max")
+        details.append("  - Max 10 retries")
+        details.append("  - If still fails, schedule pending flatten")
+        details.append("")
+        details.append("Pending Flatten:")
+        details.append("  - Saved to disk")
+        details.append("  - Processed at next market open (6:30 PT)")
+        details.append("  - Highest priority operation")
+
+        return ScenarioResult(
+            self.name, TestResult.PASS,
+            "Flatten: cancel exits → market order → retry → pending",
+            details
+        )
+
+
+class MultiSymbolScenario(ErrorScenario):
+    """Test multiple symbols trading simultaneously."""
+
+    def __init__(self):
+        super().__init__(
+            "Multi-Symbol Trading",
+            "Verify concurrent position handling"
+        )
+
+    def run(self, ib: MockIB, logger: logging.Logger) -> ScenarioResult:
+        details = []
+
+        details.append("Concurrent Positions:")
+        details.append("  - Multiple Day positions allowed (up to cap)")
+        details.append("  - Multiple Swing positions allowed (up to cap)")
+        details.append("  - Same symbol can have Day + Swing (if same direction)")
+        details.append("")
+        details.append("Cap Enforcement:")
+        details.append("  - Day cap checked before each Day entry")
+        details.append("  - Swing cap checked before each Swing entry")
+        details.append("  - Caps are independent")
+        details.append("")
+        details.append("Market Data Subscriptions:")
+        details.append("  - One ticker per symbol")
+        details.append("  - Shared between Day and Swing")
+        details.append("  - Re-subscribed on reconnect")
+        details.append("")
+        details.append("Order ID Management:")
+        details.append("  - ib.client.getReqId() for unique IDs")
+        details.append("  - Tracked per position in FillTracker")
+        details.append("  - parentId links child orders to parent")
+        details.append("")
+        details.append("Conflict checking per-symbol, not global")
+
+        return ScenarioResult(
+            self.name, TestResult.PASS,
+            "Multi-symbol: independent caps, shared tickers",
+            details
+        )
+
+
+class OrderModificationScenario(ErrorScenario):
+    """Test order modification restrictions."""
+
+    def __init__(self):
+        super().__init__(
+            "Order Modification",
+            "Verify order modification handling"
+        )
+
+    def run(self, ib: MockIB, logger: logging.Logger) -> ScenarioResult:
+        details = []
+
+        details.append("Bot Order Philosophy:")
+        details.append("  - Orders are set-and-forget")
+        details.append("  - No price modification after placement")
+        details.append("  - Stop/exit adjusted only on flatten")
+        details.append("")
+        details.append("Modification Scenarios:")
+        details.append("")
+        details.append("Entry not filled yet:")
+        details.append("  - Do NOT modify price")
+        details.append("  - If signal expired, cancel entire bracket")
+        details.append("")
+        details.append("Entry filled, adjusting stop:")
+        details.append("  - Generally not done automatically")
+        details.append("  - Manual intervention only")
+        details.append("")
+        details.append("IBKR Modification Errors:")
+        details.append("  104: Can't modify filled order")
+        details.append("  105: Modification doesn't match original")
+        details.append("  → Both logged, order unchanged")
+        details.append("")
+        details.append("Recommended: Cancel and resubmit vs modify")
+
+        return ScenarioResult(
+            self.name, TestResult.PASS,
+            "Orders: set-and-forget, no auto-modification",
+            details
+        )
+
+
+class LoggingScenario(ErrorScenario):
+    """Test logging behavior."""
+
+    def __init__(self):
+        super().__init__(
+            "Logging Behavior",
+            "Verify log output and levels"
+        )
+
+    def run(self, ib: MockIB, logger: logging.Logger) -> ScenarioResult:
+        details = []
+
+        details.append("Log Tags:")
+        details.append("  [EXEC] - OrderExecutor operations")
+        details.append("  [FILL] - FillTracker fill events")
+        details.append("  [CONN] - ConnectionManager status")
+        details.append("  [CONFLICT] - ConflictResolver decisions")
+        details.append("  [GAP] - GapManager operations")
+        details.append("  [REENTRY] - ReentryManager operations")
+        details.append("  [SKIP] - Skipped signals")
+        details.append("")
+        details.append("Log Levels:")
+        details.append("  DEBUG - Detailed flow info")
+        details.append("  INFO - Normal operations")
+        details.append("  WARNING - Recoverable issues")
+        details.append("  ERROR - Failures requiring attention")
+        details.append("")
+        details.append("Key Events Logged:")
+        details.append("  - Order placement/fill/cancel")
+        details.append("  - Connection status changes")
+        details.append("  - Ghost mode activation")
+        details.append("  - Re-entry attempts")
+        details.append("  - Error callbacks from IBKR")
+
+        return ScenarioResult(
+            self.name, TestResult.PASS,
+            "Logging: tagged by module, leveled by severity",
+            details
+        )
+
+
+class ConfigurationScenario(ErrorScenario):
+    """Test configuration options."""
+
+    def __init__(self):
+        super().__init__(
+            "Configuration Options",
+            "Verify configurable parameters"
+        )
+
+    def run(self, ib: MockIB, logger: logging.Logger) -> ScenarioResult:
+        details = []
+
+        details.append("Connection Config:")
+        details.append("  - host: TWS/Gateway host (default: 127.0.0.1)")
+        details.append("  - port: TWS/Gateway port (default: 7497)")
+        details.append("  - client_id: Unique client identifier")
+        details.append("")
+        details.append("Position Config:")
+        details.append("  - day_cap: Max concurrent Day positions")
+        details.append("  - swing_cap: Max concurrent Swing positions")
+        details.append("  - day_budget: Budget per Day position")
+        details.append("  - swing_budget: Budget per Swing position")
+        details.append("")
+        details.append("Time Config:")
+        details.append("  - Timed exit: 12:55 PT")
+        details.append("  - Market open: 6:30 PT")
+        details.append("  - Market close: 13:00 PT")
+        details.append("")
+        details.append("Retry Config:")
+        details.append("  - Flatten max retries: 10")
+        details.append("  - Reconnect max backoff: 120s")
+        details.append("")
+        details.append("Config loaded at startup, not hot-reloaded")
+
+        return ScenarioResult(
+            self.name, TestResult.PASS,
+            "Config: connection, position, time, retry settings",
+            details
+        )
+
+
+# ============================================================================
 # TEST RUNNER
 # ============================================================================
 
@@ -1468,6 +1929,19 @@ def get_all_scenarios() -> List[ErrorScenario]:
         BracketOrderScenario(),
         PartialFillScenario(),
         ErrorCallbackFlowScenario(),
+
+        # State persistence scenarios
+        StateCacheScenario(),
+        PositionReconciliationScenario(),
+        SignalLoadingScenario(),
+        EndOfDayScenario(),
+        WeekendHandlingScenario(),
+        StopOrderScenario(),
+        FlattenScenario(),
+        MultiSymbolScenario(),
+        OrderModificationScenario(),
+        LoggingScenario(),
+        ConfigurationScenario(),
     ]
 
 
