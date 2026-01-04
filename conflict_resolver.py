@@ -116,8 +116,20 @@ class ConflictResolver:
             ConflictDecision with flatten instructions and allow_entry flag
         """
         symbol = signal.symbol.upper()
-        new_side = getattr(signal, "direction", "LONG").upper()
         new_kind = self._infer_kind(signal)
+
+        # Direction is required - do not assume, block if missing
+        raw_direction = getattr(signal, "direction", None)
+        if raw_direction is None:
+            self.logger.error(
+                "[CONFLICT] Signal for %s missing direction attribute - blocking entry",
+                symbol,
+            )
+            return ConflictDecision(
+                allow_entry=False,
+                reason=f"Signal missing direction attribute for {symbol}",
+            )
+        new_side = raw_direction.upper()
 
         # Query FillTracker for existing positions on this symbol
         existing = self.fill_tracker.get_filled_positions_by_symbol(symbol)
