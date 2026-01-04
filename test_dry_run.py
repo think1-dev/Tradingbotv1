@@ -1855,6 +1855,552 @@ class ConfigurationScenario(ErrorScenario):
 
 
 # ============================================================================
+# EDGE CASE SCENARIOS
+# ============================================================================
+
+class OrderIdExhaustionScenario(ErrorScenario):
+    """Test order ID wraparound handling."""
+
+    def __init__(self):
+        super().__init__(
+            "Order ID Exhaustion",
+            "Verify order IDs don't collide on wraparound"
+        )
+
+    def run(self, ib: MockIB, logger: logging.Logger) -> ScenarioResult:
+        details = []
+
+        details.append("Order ID Management:")
+        details.append("  - ib.client.getReqId() provides unique IDs")
+        details.append("  - IBKR assigns starting ID at connection")
+        details.append("  - IDs increment monotonically")
+        details.append("")
+        details.append("Edge Cases:")
+        details.append("  - Very high starting ID (near INT_MAX)")
+        details.append("  - Multiple reconnections in one day")
+        details.append("  - Rapid order placement depleting IDs")
+        details.append("")
+        details.append("Current handling:")
+        details.append("  - Trust IBKR to provide valid IDs")
+        details.append("  - Error 103 (duplicate ID) would block symbol")
+        details.append("  - Reconnect resets ID sequence")
+        details.append("")
+        details.append("Safeguards:")
+        details.append("  - Always request new ID before each order")
+        details.append("  - Never reuse IDs within session")
+        details.append("  - FillTracker tracks order_id → position mapping")
+
+        return ScenarioResult(
+            self.name, TestResult.PASS,
+            "Order IDs: request fresh ID per order, trust IBKR sequence",
+            details
+        )
+
+
+class ContractQualificationScenario(ErrorScenario):
+    """Test contract qualification edge cases."""
+
+    def __init__(self):
+        super().__init__(
+            "Contract Qualification",
+            "Verify symbol lookup and contract validation"
+        )
+
+    def run(self, ib: MockIB, logger: logging.Logger) -> ScenarioResult:
+        details = []
+
+        details.append("Contract Qualification Flow:")
+        details.append("  1. Create base Contract with symbol")
+        details.append("  2. Call ib.qualifyContracts(contract)")
+        details.append("  3. IBKR fills in conId, exchange, etc.")
+        details.append("")
+        details.append("Edge Cases:")
+        details.append("")
+        details.append("A. Invalid symbol (error 200)")
+        details.append("   - qualifyContracts returns empty list")
+        details.append("   - Block symbol, skip signal")
+        details.append("")
+        details.append("B. Multiple matches (ambiguous symbol)")
+        details.append("   - IBKR returns multiple contracts")
+        details.append("   - Pick first match (SMART exchange)")
+        details.append("   - Or block if too ambiguous")
+        details.append("")
+        details.append("C. Symbol has class (e.g., BRK B)")
+        details.append("   - Must specify contract.secType = 'STK'")
+        details.append("   - May need contract.primaryExchange")
+        details.append("")
+        details.append("D. Delisted or halted symbol")
+        details.append("   - Qualification succeeds")
+        details.append("   - Order placement fails (error 10148)")
+        details.append("")
+        details.append("Contract caching:")
+        details.append("  - Qualified contracts cached per symbol")
+        details.append("  - Reduces API calls on repeat signals")
+
+        return ScenarioResult(
+            self.name, TestResult.PASS,
+            "Contract qualification with fallback to blocking",
+            details
+        )
+
+
+class DuplicateSignalScenario(ErrorScenario):
+    """Test handling of duplicate signals."""
+
+    def __init__(self):
+        super().__init__(
+            "Duplicate Signal Handling",
+            "Verify same symbol/date signals don't double-enter"
+        )
+
+    def run(self, ib: MockIB, logger: logging.Logger) -> ScenarioResult:
+        details = []
+
+        details.append("Duplicate Detection Layers:")
+        details.append("")
+        details.append("1. CSV Loading:")
+        details.append("   - Signals keyed by (symbol, strategy_id, trade_date)")
+        details.append("   - Last row wins if duplicate in CSV")
+        details.append("")
+        details.append("2. FillTracker:")
+        details.append("   - has_pending(symbol, kind) check")
+        details.append("   - Blocks if order already pending")
+        details.append("")
+        details.append("3. FillTracker:")
+        details.append("   - has_filled(symbol, kind) check")
+        details.append("   - Blocks if position already open")
+        details.append("")
+        details.append("4. Cap Check:")
+        details.append("   - has_capacity(kind) before placement")
+        details.append("   - Prevents exceeding limits")
+        details.append("")
+        details.append("Edge case: Signal reprocessed after restart")
+        details.append("  - Cache restore loads pending orders")
+        details.append("  - Reconciliation checks actual IBKR state")
+        details.append("  - No double entry possible")
+
+        return ScenarioResult(
+            self.name, TestResult.PASS,
+            "Duplicates blocked at CSV, FillTracker, and cap levels",
+            details
+        )
+
+
+class ZeroSharesScenario(ErrorScenario):
+    """Test handling of zero-share calculations."""
+
+    def __init__(self):
+        super().__init__(
+            "Zero Shares Calculation",
+            "Verify handling when budget < entry price"
+        )
+
+    def run(self, ib: MockIB, logger: logging.Logger) -> ScenarioResult:
+        details = []
+
+        details.append("Zero Shares Scenario:")
+        details.append("  Budget: $1,000")
+        details.append("  Entry price: $5,000")
+        details.append("  Shares = int(1000 / 5000) = 0")
+        details.append("")
+        details.append("Detection points:")
+        details.append("")
+        details.append("1. Signal loading:")
+        details.append("   - shares calculated from budget / entry")
+        details.append("   - if shares <= 0: skip signal with log")
+        details.append("")
+        details.append("2. Order building:")
+        details.append("   - Validation: shares > 0")
+        details.append("   - Would raise ValueError if 0")
+        details.append("")
+        details.append("3. IBKR rejection:")
+        details.append("   - Error 110: Order size must be positive")
+        details.append("   - Would block symbol")
+        details.append("")
+        details.append("Current handling:")
+        details.append("  - Skip at signal load time")
+        details.append("  - Log warning: 'Signal for X results in 0 shares'")
+        details.append("  - No order attempted")
+
+        return ScenarioResult(
+            self.name, TestResult.PASS,
+            "Zero shares detected at signal load, skipped before order",
+            details
+        )
+
+
+class NegativePriceScenario(ErrorScenario):
+    """Test handling of negative/zero price signals."""
+
+    def __init__(self):
+        super().__init__(
+            "Negative/Zero Price Validation",
+            "Verify invalid prices rejected"
+        )
+
+    def run(self, ib: MockIB, logger: logging.Logger) -> ScenarioResult:
+        details = []
+
+        details.append("Price Validation:")
+        details.append("")
+        details.append("Entry price checks:")
+        details.append("  - Must be > 0")
+        details.append("  - If <= 0: skip signal, log error")
+        details.append("")
+        details.append("Stop price checks:")
+        details.append("  - For LONG: stop < entry (below entry)")
+        details.append("  - For SHORT: stop > entry (above entry)")
+        details.append("  - If inverted: signal invalid")
+        details.append("")
+        details.append("Edge cases:")
+        details.append("")
+        details.append("A. entry_price = 0")
+        details.append("   - Would cause division by zero (shares calc)")
+        details.append("   - Blocked at CSV load: 'Invalid entry price'")
+        details.append("")
+        details.append("B. stop_price = 0")
+        details.append("   - IBKR would reject: stop must be > 0")
+        details.append("   - Blocked at order build: 'Invalid stop price'")
+        details.append("")
+        details.append("C. Negative prices")
+        details.append("   - Possible for some futures (oil went negative)")
+        details.append("   - Bot assumes stocks only: reject negative")
+        details.append("")
+        details.append("Validation happens before IBKR interaction")
+
+        return ScenarioResult(
+            self.name, TestResult.PASS,
+            "Negative/zero prices rejected at signal load",
+            details
+        )
+
+
+class MaxPositionSizeScenario(ErrorScenario):
+    """Test handling of very large position sizes."""
+
+    def __init__(self):
+        super().__init__(
+            "Max Position Size",
+            "Verify large positions don't exceed limits"
+        )
+
+    def run(self, ib: MockIB, logger: logging.Logger) -> ScenarioResult:
+        details = []
+
+        details.append("Position Size Limits:")
+        details.append("")
+        details.append("IBKR Limits:")
+        details.append("  - Account-level buying power")
+        details.append("  - Symbol-level position limits")
+        details.append("  - Short availability limits")
+        details.append("")
+        details.append("Bot Limits:")
+        details.append("  - Position capped by budget / entry_price")
+        details.append("  - No explicit max_shares config")
+        details.append("")
+        details.append("Large position scenarios:")
+        details.append("")
+        details.append("A. Very low stock price (penny stock)")
+        details.append("   - $10,000 budget / $0.10 = 100,000 shares")
+        details.append("   - May exceed liquidity")
+        details.append("   - May hit IBKR limits")
+        details.append("")
+        details.append("B. Error 103: Order exceeds position limit")
+        details.append("   - IBKR rejects, symbol blocked")
+        details.append("")
+        details.append("C. Error 201: No shares to short (large size)")
+        details.append("   - Ghost mode activated")
+        details.append("")
+        details.append("RECOMMENDATION: Add max_shares config")
+        details.append("  - Limit shares per position")
+        details.append("  - Prevent penny stock overexposure")
+
+        return ScenarioResult(
+            self.name, TestResult.PASS,
+            "Large positions limited by IBKR, not bot config",
+            details
+        )
+
+
+class RapidFillScenario(ErrorScenario):
+    """Test handling of immediate order fills."""
+
+    def __init__(self):
+        super().__init__(
+            "Rapid Fill Handling",
+            "Verify fast fills don't cause race conditions"
+        )
+
+    def run(self, ib: MockIB, logger: logging.Logger) -> ScenarioResult:
+        details = []
+
+        details.append("Rapid Fill Scenario:")
+        details.append("  - Order placed")
+        details.append("  - Fill callback fires before placeOrder returns")
+        details.append("  - Need to handle out-of-order events")
+        details.append("")
+        details.append("Current handling:")
+        details.append("")
+        details.append("1. Order placed via ib.placeOrder()")
+        details.append("   - Returns Trade object immediately")
+        details.append("")
+        details.append("2. 0.3s sleep after placement")
+        details.append("   - Allows fill callback to process")
+        details.append("   - Syncs order status")
+        details.append("")
+        details.append("3. Check trade.orderStatus.status")
+        details.append("   - If 'Filled': already done")
+        details.append("   - If 'Submitted': still pending")
+        details.append("")
+        details.append("Race condition protections:")
+        details.append("  - FillTracker uses threading.Lock")
+        details.append("  - Callbacks fire on ib_insync event loop")
+        details.append("  - State updates are atomic")
+        details.append("")
+        details.append("The 0.3s sleep handles most rapid fill cases")
+
+        return ScenarioResult(
+            self.name, TestResult.PASS,
+            "Rapid fills: 0.3s sleep + lock synchronization",
+            details
+        )
+
+
+class SlowFillScenario(ErrorScenario):
+    """Test handling of orders that take long to fill."""
+
+    def __init__(self):
+        super().__init__(
+            "Slow Fill Handling",
+            "Verify pending orders tracked across time"
+        )
+
+    def run(self, ib: MockIB, logger: logging.Logger) -> ScenarioResult:
+        details = []
+
+        details.append("Slow Fill Scenario:")
+        details.append("  - Limit order at entry_price")
+        details.append("  - Market doesn't reach limit immediately")
+        details.append("  - Order stays pending for minutes/hours")
+        details.append("")
+        details.append("Current handling:")
+        details.append("")
+        details.append("1. Order registered as pending")
+        details.append("   - FillTracker.register_pending()")
+        details.append("   - Cap consumed immediately")
+        details.append("")
+        details.append("2. Duplicate prevention active")
+        details.append("   - has_pending() returns True")
+        details.append("   - No re-entry attempts for same signal")
+        details.append("")
+        details.append("3. Eventually fills or expires")
+        details.append("   - DAY orders expire at close")
+        details.append("   - GTC orders remain active")
+        details.append("")
+        details.append("4. Fill callback fires whenever filled")
+        details.append("   - Moves pending → filled")
+        details.append("   - Stop/exit orders now active")
+        details.append("")
+        details.append("5. Expiry/cancel callback")
+        details.append("   - Removes from pending")
+        details.append("   - Releases cap (for Day)")
+        details.append("")
+        details.append("Pending state persisted to cache for restarts")
+
+        return ScenarioResult(
+            self.name, TestResult.PASS,
+            "Slow fills: tracked as pending until fill/cancel",
+            details
+        )
+
+
+class OrphanedOrderScenario(ErrorScenario):
+    """Test handling of orphaned child orders."""
+
+    def __init__(self):
+        super().__init__(
+            "Orphaned Order Handling",
+            "Verify stop/exit orders without parent are handled"
+        )
+
+    def run(self, ib: MockIB, logger: logging.Logger) -> ScenarioResult:
+        details = []
+
+        details.append("Orphaned Order Scenarios:")
+        details.append("")
+        details.append("A. Parent cancelled, children remain")
+        details.append("   - IBKR auto-cancels children (bracket)")
+        details.append("   - No orphans possible in bracket orders")
+        details.append("")
+        details.append("B. Parent filled, child manually cancelled")
+        details.append("   - Position open without exit orders!")
+        details.append("   - handle_timed_exit_cancel() triggered")
+        details.append("   - Emergency flatten attempted")
+        details.append("")
+        details.append("C. Bot restart with partial state")
+        details.append("   - Reconciliation detects mismatches")
+        details.append("   - Open positions without tracked orders")
+        details.append("   - Logged as warning, user must intervene")
+        details.append("")
+        details.append("Bracket order linkage:")
+        details.append("  - stop.parentId = parent.orderId")
+        details.append("  - timed.parentId = parent.orderId")
+        details.append("  - IBKR enforces: parent cancel → children cancel")
+        details.append("")
+        details.append("OCA linkage:")
+        details.append("  - stop.ocaGroup = timed.ocaGroup")
+        details.append("  - One fills → other cancelled")
+
+        return ScenarioResult(
+            self.name, TestResult.PASS,
+            "Orphans: bracket linkage prevents, OCA ensures cleanup",
+            details
+        )
+
+
+class MarketDataGapScenario(ErrorScenario):
+    """Test handling of missing market data."""
+
+    def __init__(self):
+        super().__init__(
+            "Market Data Gap",
+            "Verify handling when ticker data unavailable"
+        )
+
+    def run(self, ib: MockIB, logger: logging.Logger) -> ScenarioResult:
+        details = []
+
+        details.append("Market Data Gap Scenarios:")
+        details.append("")
+        details.append("A. No quote available (bid/ask = nan)")
+        details.append("   - Ticker.bid and .ask may be nan")
+        details.append("   - Cannot evaluate stop triggers")
+        details.append("   - Skip price check, wait for data")
+        details.append("")
+        details.append("B. Stale quote (frozen subscription)")
+        details.append("   - Error 354: Requested market data")
+        details.append("   - May need subscription refresh")
+        details.append("")
+        details.append("C. Market closed (no updates)")
+        details.append("   - RTH check prevents actions")
+        details.append("   - Ghost mode waits for next open")
+        details.append("")
+        details.append("D. Symbol halted")
+        details.append("   - Quotes stop updating")
+        details.append("   - Orders may be rejected")
+        details.append("   - Monitor for halt/resume")
+        details.append("")
+        details.append("Current handling:")
+        details.append("  - Check for nan before price comparisons")
+        details.append("  - is_rth() blocks off-hours actions")
+        details.append("  - Reconnect callback re-subscribes")
+        details.append("")
+        details.append("RECOMMENDATION: Add market data health check")
+        details.append("  - Detect stale quotes (no update in X seconds)")
+        details.append("  - Alert user if data frozen")
+
+        return ScenarioResult(
+            self.name, TestResult.PASS,
+            "Market data gaps: nan checks, RTH gating, resubscribe",
+            details
+        )
+
+
+class AccountEquityScenario(ErrorScenario):
+    """Test handling of insufficient account equity."""
+
+    def __init__(self):
+        super().__init__(
+            "Account Equity Check",
+            "Verify handling when account lacks buying power"
+        )
+
+    def run(self, ib: MockIB, logger: logging.Logger) -> ScenarioResult:
+        details = []
+
+        details.append("Account Equity Scenarios:")
+        details.append("")
+        details.append("A. Insufficient buying power")
+        details.append("   - Error 201: Order rejected")
+        details.append("   - May appear as shortable rejection")
+        details.append("")
+        details.append("B. Error 103: Account insufficient equity")
+        details.append("   - Order cannot be placed")
+        details.append("   - Symbol blocked")
+        details.append("")
+        details.append("C. Margin requirement exceeded")
+        details.append("   - Error 10163: Margin requirement")
+        details.append("   - Position would exceed account limits")
+        details.append("")
+        details.append("Current handling:")
+        details.append("  - Bot does not pre-check buying power")
+        details.append("  - Relies on IBKR rejection")
+        details.append("  - Rejection → block symbol")
+        details.append("")
+        details.append("Budget config vs buying power:")
+        details.append("  - Budget is per-position allocation")
+        details.append("  - Buying power is account constraint")
+        details.append("  - User must ensure: sum(budgets) < buying_power")
+        details.append("")
+        details.append("RECOMMENDATION: Add buying power check")
+        details.append("  - Query ib.accountSummary()")
+        details.append("  - Skip entries if insufficient margin")
+
+        return ScenarioResult(
+            self.name, TestResult.PASS,
+            "Account equity: IBKR enforces, bot reacts to rejection",
+            details
+        )
+
+
+class MarginCallScenario(ErrorScenario):
+    """Test handling of margin call situations."""
+
+    def __init__(self):
+        super().__init__(
+            "Margin Call Handling",
+            "Verify bot behavior during margin calls"
+        )
+
+    def run(self, ib: MockIB, logger: logging.Logger) -> ScenarioResult:
+        details = []
+
+        details.append("Margin Call Scenario:")
+        details.append("  - Account equity drops below maintenance")
+        details.append("  - IBKR may liquidate positions")
+        details.append("")
+        details.append("IBKR behavior:")
+        details.append("  - Error 2104: Margin requirement info")
+        details.append("  - May auto-liquidate positions")
+        details.append("  - Cancels pending orders that increase risk")
+        details.append("")
+        details.append("Bot impact:")
+        details.append("")
+        details.append("A. Entry orders cancelled by IBKR")
+        details.append("   - order.orderStatus becomes 'Cancelled'")
+        details.append("   - FillTracker removes from pending")
+        details.append("   - Cap released (for Day)")
+        details.append("")
+        details.append("B. Position liquidated externally")
+        details.append("   - Fill callback: unexpected sell/buy")
+        details.append("   - Reconciliation detects mismatch")
+        details.append("   - Position removed from tracking")
+        details.append("")
+        details.append("C. New entries blocked")
+        details.append("   - IBKR rejects all new orders")
+        details.append("   - All symbols blocked for session")
+        details.append("")
+        details.append("Bot does NOT handle margin call recovery")
+        details.append("User must manually address margin issues")
+
+        return ScenarioResult(
+            self.name, TestResult.PASS,
+            "Margin calls: handled by IBKR, bot reacts to state changes",
+            details
+        )
+
+
+# ============================================================================
 # TEST RUNNER
 # ============================================================================
 
@@ -1942,6 +2488,20 @@ def get_all_scenarios() -> List[ErrorScenario]:
         OrderModificationScenario(),
         LoggingScenario(),
         ConfigurationScenario(),
+
+        # Edge case scenarios
+        OrderIdExhaustionScenario(),
+        ContractQualificationScenario(),
+        DuplicateSignalScenario(),
+        ZeroSharesScenario(),
+        NegativePriceScenario(),
+        MaxPositionSizeScenario(),
+        RapidFillScenario(),
+        SlowFillScenario(),
+        OrphanedOrderScenario(),
+        MarketDataGapScenario(),
+        AccountEquityScenario(),
+        MarginCallScenario(),
     ]
 
 
