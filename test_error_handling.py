@@ -16,7 +16,11 @@ from typing import Dict, List, Optional, Tuple
 from enum import Enum
 
 # Define SHORTABLE_ERROR_CODES locally (same as execution.py)
-SHORTABLE_ERROR_CODES = {201, 10147, 162}
+# 201: Order rejected - no shares to borrow
+# 10147: Order would violate security short sale rule
+# 162: Historical market data error (short sale related)
+# 426: None of accounts have enough shares for short sale
+SHORTABLE_ERROR_CODES = {201, 10147, 162, 426}
 
 
 @dataclass
@@ -252,8 +256,8 @@ TWS_ERRORS: List[ErrorDefinition] = [
                    "Enable API trading in Account Management", False,
                    "User must enable API trading"),
     ErrorDefinition(426, "None of the accounts have enough shares", ErrorCategory.ACCOUNT_PERMISSION, "error",
-                   "Insufficient shares for short sale - enable ghost mode", False,
-                   "Should be added to SHORTABLE_ERROR_CODES?"),
+                   "Insufficient shares for short sale - enable ghost mode", True,
+                   "Part of SHORTABLE_ERROR_CODES - triggers ghost mode"),
     ErrorDefinition(435, "You must specify an account", ErrorCategory.ACCOUNT_PERMISSION, "error",
                    "Provide account code for single-account function", True),
     ErrorDefinition(436, "You must specify an allocation", ErrorCategory.ACCOUNT_PERMISSION, "error",
@@ -357,7 +361,7 @@ def analyze_error_handling() -> Dict[str, List[ErrorDefinition]]:
 
 def test_shortable_error_codes():
     """Verify SHORTABLE_ERROR_CODES contains the correct codes."""
-    expected_shortable = {201, 10147, 162}
+    expected_shortable = {201, 10147, 162, 426}
 
     print("\n=== Testing SHORTABLE_ERROR_CODES ===")
     print(f"Current codes: {SHORTABLE_ERROR_CODES}")
@@ -372,10 +376,6 @@ def test_shortable_error_codes():
             print(f"✗ Missing codes: {missing}")
         if extra:
             print(f"? Extra codes: {extra}")
-
-    # Check if 426 (insufficient shares) should be added
-    print("\n⚠ Note: Error 426 'None of accounts have enough shares' may also")
-    print("  indicate short sale rejection. Consider adding to SHORTABLE_ERROR_CODES?")
 
     return SHORTABLE_ERROR_CODES == expected_shortable
 

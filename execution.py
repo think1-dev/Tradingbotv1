@@ -26,7 +26,11 @@ from ib_insync import IB, Trade, Order
 
 
 # IBKR error codes indicating "no shortable shares available"
-SHORTABLE_ERROR_CODES = {201, 10147, 162}
+# 201: Order rejected - no shares to borrow
+# 10147: Order would violate security short sale rule
+# 162: Historical market data error (short sale related)
+# 426: None of accounts have enough shares for short sale
+SHORTABLE_ERROR_CODES = {201, 10147, 162, 426}
 
 
 @dataclass
