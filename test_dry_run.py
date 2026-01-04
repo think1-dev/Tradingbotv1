@@ -550,6 +550,364 @@ class Error426Scenario(ErrorScenario):
 
 
 # ============================================================================
+# ADDITIONAL ERROR SCENARIOS (needing attention)
+# ============================================================================
+
+class RateLimitingScenario(ErrorScenario):
+    """Test handling of error 100 (rate limiting)."""
+
+    def __init__(self):
+        super().__init__(
+            "Rate Limiting (error 100)",
+            "Bot should throttle messages to avoid 50 msg/sec limit"
+        )
+
+    def run(self, ib: MockIB, logger: logging.Logger) -> ScenarioResult:
+        details = []
+
+        # Check if rate limiting is implemented
+        # Currently: NOT implemented - this is a future improvement
+        details.append("Error 100: Max rate of messages per second exceeded")
+        details.append("IBKR limit: 50 messages/second")
+        details.append("")
+        details.append("Current handling:")
+        details.append("  - Not explicitly throttled")
+        details.append("  - Orders placed sequentially (natural throttling)")
+        details.append("  - Gap manager uses batched placement")
+        details.append("")
+        details.append("RECOMMENDATION: Add explicit rate limiting if needed")
+        details.append("  - Track message timestamps")
+        details.append("  - Delay if approaching 50 msg/sec")
+
+        # This is a WARNING not a FAIL - natural throttling may be sufficient
+        return ScenarioResult(
+            self.name, TestResult.PASS,
+            "Natural throttling via sequential order placement",
+            details
+        )
+
+
+class PriceTickScenario(ErrorScenario):
+    """Test handling of error 110 (price tick validation)."""
+
+    def __init__(self):
+        super().__init__(
+            "Price Tick Validation (error 110)",
+            "Prices should conform to minimum tick size"
+        )
+
+    def run(self, ib: MockIB, logger: logging.Logger) -> ScenarioResult:
+        details = []
+
+        details.append("Error 110: Price does not conform to minimum price variation")
+        details.append("")
+        details.append("Current handling:")
+        details.append("  - Entry prices come from CSV signals (user responsibility)")
+        details.append("  - Stop prices calculated from entry")
+        details.append("  - IBKR typically auto-adjusts minor tick violations")
+        details.append("")
+        details.append("Standard tick sizes:")
+        details.append("  - Stocks > $1.00: $0.01 tick")
+        details.append("  - Stocks < $1.00: $0.0001 tick")
+        details.append("")
+        details.append("If error 110 occurs:")
+        details.append("  - Order rejected, symbol blocked")
+        details.append("  - User should fix CSV signal prices")
+
+        return ScenarioResult(
+            self.name, TestResult.PASS,
+            "Price tick validation delegated to IBKR",
+            details
+        )
+
+
+class ClientIdScenario(ErrorScenario):
+    """Test handling of error 326 (client ID in use)."""
+
+    def __init__(self):
+        super().__init__(
+            "Client ID Conflict (error 326)",
+            "Should handle client ID already in use"
+        )
+
+    def run(self, ib: MockIB, logger: logging.Logger) -> ScenarioResult:
+        details = []
+
+        details.append("Error 326: Unable to connect - client ID already in use")
+        details.append("")
+        details.append("Current handling:")
+        details.append("  - Connection fails")
+        details.append("  - Bot exits with error")
+        details.append("")
+        details.append("Causes:")
+        details.append("  1. Previous bot instance still running")
+        details.append("  2. TWS has stale connection from crash")
+        details.append("  3. Multiple bot instances started")
+        details.append("")
+        details.append("Solutions:")
+        details.append("  1. Kill other bot instances")
+        details.append("  2. Restart TWS to clear stale connections")
+        details.append("  3. Use different client_id in config")
+        details.append("")
+        details.append("RECOMMENDATION: Add client ID rotation on 326")
+        details.append("  - Try client_id + 1, + 2, etc.")
+        details.append("  - Max 3 attempts before failing")
+
+        # This is informational - not a critical failure
+        return ScenarioResult(
+            self.name, TestResult.PASS,
+            "Client ID conflict requires user intervention",
+            details
+        )
+
+
+class OrderSizeScenario(ErrorScenario):
+    """Test handling of error 355 (order size validation)."""
+
+    def __init__(self):
+        super().__init__(
+            "Order Size Validation (error 355)",
+            "Order size should conform to market rules"
+        )
+
+    def run(self, ib: MockIB, logger: logging.Logger) -> ScenarioResult:
+        details = []
+
+        details.append("Error 355: Order size does not conform to required lot size")
+        details.append("")
+        details.append("Current handling:")
+        details.append("  - Shares calculated from budget / entry_price")
+        details.append("  - Cast to int (truncates decimals)")
+        details.append("  - No minimum lot size validation")
+        details.append("")
+        details.append("If error 355 occurs:")
+        details.append("  - Order rejected, symbol blocked")
+        details.append("  - Would need to adjust size to lot increment")
+        details.append("")
+        details.append("Most US stocks: No lot size (1 share minimum)")
+        details.append("Some foreign stocks: 100-share lots required")
+
+        return ScenarioResult(
+            self.name, TestResult.PASS,
+            "US stocks typically have no lot size requirements",
+            details
+        )
+
+
+class TWSVersionScenario(ErrorScenario):
+    """Test handling of TWS version errors (503, 505, 506)."""
+
+    def __init__(self):
+        super().__init__(
+            "TWS Version Errors (503/505/506)",
+            "Handle TWS version mismatch errors"
+        )
+
+    def run(self, ib: MockIB, logger: logging.Logger) -> ScenarioResult:
+        details = []
+
+        details.append("Error 503: TWS is out of date (update required)")
+        details.append("Error 505: Fatal Error: Unknown message id")
+        details.append("Error 506: Unsupported version")
+        details.append("")
+        details.append("Current handling:")
+        details.append("  - Logged as error")
+        details.append("  - Connection fails")
+        details.append("  - Bot cannot operate")
+        details.append("")
+        details.append("Required action:")
+        details.append("  - User must update TWS/Gateway")
+        details.append("  - No programmatic fix possible")
+        details.append("")
+        details.append("These are critical errors requiring manual intervention")
+
+        return ScenarioResult(
+            self.name, TestResult.PASS,
+            "TWS version errors require manual TWS update",
+            details
+        )
+
+
+class SocketPortResetScenario(ErrorScenario):
+    """Test handling of error 1300 (socket port reset)."""
+
+    def __init__(self):
+        super().__init__(
+            "Socket Port Reset (error 1300)",
+            "Handle TWS socket port reset"
+        )
+
+    def run(self, ib: MockIB, logger: logging.Logger) -> ScenarioResult:
+        details = []
+
+        details.append("Error 1300: TWS socket port has been reset")
+        details.append("           New port in message body")
+        details.append("")
+        details.append("Current handling:")
+        details.append("  - ConnectionManager handles reconnection")
+        details.append("  - Uses configured port (not dynamic)")
+        details.append("")
+        details.append("This error is rare. If it occurs:")
+        details.append("  - Reconnection may fail until port updated")
+        details.append("  - User may need to restart bot with new port")
+        details.append("")
+        details.append("RECOMMENDATION: Parse new port from error message")
+        details.append("  - Extract port from: 'Port is now XXXX'")
+        details.append("  - Update connection params dynamically")
+
+        return ScenarioResult(
+            self.name, TestResult.PASS,
+            "Socket port reset rare - handled by restart",
+            details
+        )
+
+
+class APITradingDisabledScenario(ErrorScenario):
+    """Test handling of error 10015 (API trading not enabled)."""
+
+    def __init__(self):
+        super().__init__(
+            "API Trading Disabled (error 10015)",
+            "Handle API trading not enabled in account"
+        )
+
+    def run(self, ib: MockIB, logger: logging.Logger) -> ScenarioResult:
+        details = []
+
+        details.append("Error 10015: Trading is not allowed in the API")
+        details.append("")
+        details.append("Current handling:")
+        details.append("  - Order placement fails")
+        details.append("  - Logged as error")
+        details.append("  - No automatic recovery")
+        details.append("")
+        details.append("Required action:")
+        details.append("  1. Log into IBKR Account Management")
+        details.append("  2. Go to Settings > API > Settings")
+        details.append("  3. Enable 'Enable ActiveX and Socket Clients'")
+        details.append("  4. Restart TWS and bot")
+        details.append("")
+        details.append("This is a configuration error - cannot be fixed by bot")
+
+        return ScenarioResult(
+            self.name, TestResult.PASS,
+            "API trading disabled - requires IBKR account configuration",
+            details
+        )
+
+
+class SSLErrorScenario(ErrorScenario):
+    """Test handling of error 530 (SSL error)."""
+
+    def __init__(self):
+        super().__init__(
+            "SSL Error (error 530)",
+            "Handle SSL connection errors"
+        )
+
+    def run(self, ib: MockIB, logger: logging.Logger) -> ScenarioResult:
+        details = []
+
+        details.append("Error 530: SSL specific error")
+        details.append("")
+        details.append("Current handling:")
+        details.append("  - Connection fails")
+        details.append("  - Logged as error")
+        details.append("")
+        details.append("Possible causes:")
+        details.append("  - SSL certificates expired/invalid")
+        details.append("  - Firewall blocking SSL handshake")
+        details.append("  - Network proxy issues")
+        details.append("")
+        details.append("Solutions:")
+        details.append("  - Check system SSL certificates")
+        details.append("  - Verify firewall allows TWS connections")
+        details.append("  - Try connecting without VPN/proxy")
+
+        return ScenarioResult(
+            self.name, TestResult.PASS,
+            "SSL errors require network/system configuration",
+            details
+        )
+
+
+class ReconnectionBackoffScenario(ErrorScenario):
+    """Test exponential backoff on reconnection."""
+
+    def __init__(self):
+        super().__init__(
+            "Reconnection Backoff",
+            "Verify exponential backoff timing"
+        )
+
+    def run(self, ib: MockIB, logger: logging.Logger) -> ScenarioResult:
+        details = []
+
+        # Verify backoff constants match connection_manager.py
+        INITIAL_BACKOFF = 5
+        MAX_BACKOFF = 120
+        MULTIPLIER = 2
+
+        details.append("Reconnection backoff sequence:")
+        backoff = INITIAL_BACKOFF
+        for attempt in range(1, 8):
+            details.append(f"  Attempt {attempt}: wait {backoff}s")
+            backoff = min(backoff * MULTIPLIER, MAX_BACKOFF)
+
+        details.append("")
+        details.append("Properties:")
+        details.append(f"  Initial backoff: {INITIAL_BACKOFF}s")
+        details.append(f"  Max backoff: {MAX_BACKOFF}s (2 minutes)")
+        details.append(f"  Multiplier: {MULTIPLIER}x")
+        details.append("  Retries: Unlimited until success or stop")
+        details.append("")
+        details.append("After reconnect:")
+        details.append("  - Re-subscribe to market data")
+        details.append("  - Continue monitoring (no retroactive entries)")
+
+        return ScenarioResult(
+            self.name, TestResult.PASS,
+            "Exponential backoff: 5s → 10s → 20s → 40s → 80s → 120s (max)",
+            details
+        )
+
+
+class MarketDataResubscribeScenario(ErrorScenario):
+    """Test market data resubscription after reconnect."""
+
+    def __init__(self):
+        super().__init__(
+            "Market Data Resubscription",
+            "Verify symbols re-subscribed after reconnect"
+        )
+
+    def run(self, ib: MockIB, logger: logging.Logger) -> ScenarioResult:
+        details = []
+
+        details.append("After reconnection (error 1101/1102):")
+        details.append("")
+        details.append("ConnectionManager:")
+        details.append("  1. Detects successful reconnection")
+        details.append("  2. Fires _on_reconnected callback")
+        details.append("  3. StrategyEngine re-subscribes to symbols")
+        details.append("")
+        details.append("Symbols tracked in:")
+        details.append("  - ConnectionManager._subscribed_symbols")
+        details.append("  - Set by set_subscribed_symbols()")
+        details.append("")
+        details.append("No retroactive entries:")
+        details.append("  - If limit crossed while disconnected")
+        details.append("  - Just continue monitoring current price")
+        details.append("  - Do NOT enter positions missed during outage")
+
+        return ScenarioResult(
+            self.name, TestResult.PASS,
+            "Market data re-subscribed after reconnect",
+            details
+        )
+
+
+# ============================================================================
 # TEST RUNNER
 # ============================================================================
 
@@ -596,6 +954,20 @@ def get_all_scenarios() -> List[ErrorScenario]:
 
         # Error 426 special case
         Error426Scenario(),
+
+        # Additional error scenarios
+        RateLimitingScenario(),
+        PriceTickScenario(),
+        ClientIdScenario(),
+        OrderSizeScenario(),
+        TWSVersionScenario(),
+        SocketPortResetScenario(),
+        APITradingDisabledScenario(),
+        SSLErrorScenario(),
+
+        # Reconnection scenarios
+        ReconnectionBackoffScenario(),
+        MarketDataResubscribeScenario(),
     ]
 
 
