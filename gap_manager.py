@@ -470,6 +470,7 @@ class GapManager:
                         )
             else:
                 # Non-shortable rejection or no re-entry candidates - block and drop
+                # NOTE: Swing cap stays consumed (not released) - fill state persists
                 if reentry_candidate_ids and self.reentry_manager is not None:
                     for cid in reentry_candidate_ids:
                         try:
