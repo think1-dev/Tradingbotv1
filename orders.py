@@ -219,27 +219,37 @@ def _get_swing_exit_times(trade_date: date) -> tuple:
     """
     Get the GTD and GAT times for swing exit orders.
 
-    Returns (week_ending_day, stop_gtd_string, timed_gat_string)
+    Returns (next_monday, stop_gtd_string, timed_gat_string)
 
-    Swing positions exit on the week-ending day (Friday, or Thursday
-    if Friday is a holiday), with times adjusted for early close.
+    Swing positions hold through the weekend and exit at the beginning
+    of the next trading week:
+    - Timed exit GAT: Next Monday @ 6:30 AM PT (market open)
+    - Stop GTD: Next Monday @ close (to maintain protection through weekend)
     """
-    week_end = mc.get_week_ending_day(trade_date)
-    stop_time = mc.get_day_stop_time_pt(week_end)  # 5 min before close
+    # Get next Monday (start of next trading week)
+    # Current week's Monday + 7 days = next Monday
+    current_monday = trade_date - timedelta(days=trade_date.weekday())
+    next_monday = current_monday + timedelta(days=7)
 
-    # Stop GTD: week-ending day @ (close - 5 min)
+    # If next Monday is a holiday, use the next trading day
+    if not mc.is_trading_day(next_monday):
+        next_monday = mc.get_next_trading_day(next_monday)
+
+    stop_time = mc.get_day_stop_time_pt(next_monday)  # 5 min before close
+
+    # Stop GTD: next Monday @ (close - 5 min)
     stop_dt = datetime(
-        week_end.year, week_end.month, week_end.day,
+        next_monday.year, next_monday.month, next_monday.day,
         stop_time.hour, stop_time.minute, 0
     )
 
-    # Timed exit GAT: week-ending day @ market open (6:30 PT)
+    # Timed exit GAT: next Monday @ market open (6:30 PT)
     timed_dt = datetime(
-        week_end.year, week_end.month, week_end.day,
+        next_monday.year, next_monday.month, next_monday.day,
         6, 30, 0
     )
 
-    return week_end, _format_pt_datetime(stop_dt), _format_pt_datetime(timed_dt)
+    return next_monday, _format_pt_datetime(stop_dt), _format_pt_datetime(timed_dt)
 
 
 def build_swing_bracket(
@@ -253,14 +263,17 @@ def build_swing_bracket(
 
     Normal (non-gap) behavior per spec, LONG-only:
       - Parent: BUY LMT @ Entry (we now use LIMIT for MOMO as well).
-      - Stop child: SELL STP @ Stop, GTD to week-ending day (Fri/Thu) ~12:55 PT.
-      - Timed exit child: SELL MKT, DAY, GAT week-ending day 06:30 PT.
+      - Stop child: SELL STP @ Stop, GTD to next Monday ~12:55 PT.
+      - Timed exit child: SELL MKT, DAY, GAT next Monday 06:30 PT.
+
+    Swing positions hold through the weekend and exit at the beginning
+    of the next trading week (Monday, or next trading day if Monday is holiday).
 
     `market_entry` is kept for gap-at-open logic and re-entry (MKT entry).
     In the normal path, pass None (=> LIMIT entry for all strategies).
 
     Now uses market_calendar for:
-    - Week-ending day detection (Friday, or Thursday if Friday is holiday)
+    - Next Monday detection (or next trading day if Monday is holiday)
     - Early close time adjustment (10:00 PT close on early close days)
     """
     symbol = signal.symbol

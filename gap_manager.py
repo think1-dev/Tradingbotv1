@@ -723,9 +723,13 @@ class GapManager:
         Place stop and timed exit orders to complete a gap bracket.
 
         Called after the MKT order fills.
+
+        Exit timing depends on signal type:
+        - DAY: Same-day timed exit at ~12:58 PT
+        - SWING: Next Monday @ 6:30 AM PT (holds through weekend)
         """
         from ib_insync import Order
-        from orders import make_stock_contract
+        from orders import make_stock_contract, _get_swing_exit_times
         from time_utils import get_day_exit_time_pt
 
         try:
@@ -738,29 +742,41 @@ class GapManager:
             # Determine exit action (opposite of entry)
             exit_action = "SELL" if direction == "LONG" else "BUY"
 
+            trade_date = now_pt().date()
+
+            # Get exit timing based on signal type
+            if signal_type.upper() == "SWING":
+                # Swing: next Monday timing
+                _, stop_gtd_str, timed_gat_str = _get_swing_exit_times(trade_date)
+                stop_tif = "GTD"
+            else:
+                # Day: same-day timing
+                exit_time = get_day_exit_time_pt()
+                timed_gat_str = f"{trade_date.strftime('%Y%m%d')} {exit_time.strftime('%H:%M:%S')} US/Pacific"
+                stop_gtd_str = None
+                stop_tif = "GTC"
+
             # Create stop order
             stop_order = Order(
                 action=exit_action,
                 orderType="STP",
                 totalQuantity=shares,
                 auxPrice=stop_price,
-                tif="GTC",
+                tif=stop_tif,
                 transmit=False,
             )
 
+            # Set GTD for swing stops
+            if stop_gtd_str is not None:
+                stop_order.goodTillDate = stop_gtd_str
+
             # Create timed exit order
-            trade_date = now_pt().date()
-            exit_time = get_day_exit_time_pt()
-
-            # Format GAT time for IBKR (YYYYMMDD HH:MM:SS timezone)
-            gat_str = f"{trade_date.strftime('%Y%m%d')} {exit_time.strftime('%H:%M:%S')} US/Pacific"
-
             timed_order = Order(
                 action=exit_action,
                 orderType="MKT",
                 totalQuantity=shares,
                 tif="DAY",
-                goodAfterTime=gat_str,
+                goodAfterTime=timed_gat_str,
                 transmit=True,  # Transmit all
             )
 
