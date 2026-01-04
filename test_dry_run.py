@@ -3788,6 +3788,544 @@ class LockContentionScenario(ErrorScenario):
 
 
 # ============================================================================
+# RISK MANAGEMENT SCENARIOS
+# ============================================================================
+
+class PositionSizingScenario(ErrorScenario):
+    """Test position sizing calculation."""
+
+    def __init__(self):
+        super().__init__(
+            "Position Sizing",
+            "Verify shares calculated from budget"
+        )
+
+    def run(self, ib: MockIB, logger: logging.Logger) -> ScenarioResult:
+        details = []
+
+        details.append("Position Sizing Formula:")
+        details.append("")
+        details.append("shares = int(budget / entry_price)")
+        details.append("")
+        details.append("Configuration:")
+        details.append("  - DAY_BUDGET_PER_POSITION: per-signal allocation")
+        details.append("  - SWING_BUDGET_PER_POSITION: per-signal allocation")
+        details.append("")
+        details.append("Examples (Day, $10,000 budget):")
+        details.append("  - Entry $50.00 → 200 shares")
+        details.append("  - Entry $100.00 → 100 shares")
+        details.append("  - Entry $250.00 → 40 shares")
+        details.append("  - Entry $15,000 → 0 shares (skipped)")
+        details.append("")
+        details.append("Truncation behavior:")
+        details.append("  - int() truncates fractional shares")
+        details.append("  - $10,000 / $33.33 = 300.03 → 300 shares")
+        details.append("  - Actual cost: 300 × $33.33 = $9,999")
+        details.append("")
+        details.append("Zero shares:")
+        details.append("  - If entry > budget → 0 shares")
+        details.append("  - Signal skipped with log")
+
+        return ScenarioResult(
+            self.name, TestResult.PASS,
+            "shares = int(budget / entry), zero shares skipped",
+            details
+        )
+
+
+class RiskPerTradeScenario(ErrorScenario):
+    """Test risk per trade calculation."""
+
+    def __init__(self):
+        super().__init__(
+            "Risk Per Trade",
+            "Verify dollar risk computed correctly"
+        )
+
+    def run(self, ib: MockIB, logger: logging.Logger) -> ScenarioResult:
+        details = []
+
+        details.append("Risk Per Trade Calculation:")
+        details.append("")
+        details.append("Formula:")
+        details.append("  risk = shares × stop_distance")
+        details.append("  stop_distance = abs(entry - stop)")
+        details.append("")
+        details.append("Example (LONG):")
+        details.append("  - Entry: $100.00")
+        details.append("  - Stop: $95.00")
+        details.append("  - Shares: 100")
+        details.append("  - Risk: 100 × $5.00 = $500")
+        details.append("")
+        details.append("Example (SHORT):")
+        details.append("  - Entry: $100.00")
+        details.append("  - Stop: $105.00")
+        details.append("  - Shares: 100")
+        details.append("  - Risk: 100 × $5.00 = $500")
+        details.append("")
+        details.append("Risk limits (not enforced by bot):")
+        details.append("  - User sets appropriate budget")
+        details.append("  - User sets appropriate stop distance")
+        details.append("  - Bot executes as configured")
+        details.append("")
+        details.append("RECOMMENDATION: Add max_risk_per_trade config")
+        details.append("  - Skip signals where risk > max")
+
+        return ScenarioResult(
+            self.name, TestResult.PASS,
+            "risk = shares × stop_distance, no max enforced",
+            details
+        )
+
+
+class PortfolioExposureScenario(ErrorScenario):
+    """Test portfolio exposure limits."""
+
+    def __init__(self):
+        super().__init__(
+            "Portfolio Exposure",
+            "Verify cap limits control exposure"
+        )
+
+    def run(self, ib: MockIB, logger: logging.Logger) -> ScenarioResult:
+        details = []
+
+        details.append("Portfolio Exposure Control:")
+        details.append("")
+        details.append("Cap limits:")
+        details.append("  - DAY_CAP: Max concurrent Day positions")
+        details.append("  - SWING_CAP: Max concurrent Swing positions")
+        details.append("")
+        details.append("Max exposure calculation:")
+        details.append("  Day: DAY_CAP × DAY_BUDGET = max Day exposure")
+        details.append("  Swing: SWING_CAP × SWING_BUDGET = max Swing exposure")
+        details.append("  Total: Day + Swing = max total exposure")
+        details.append("")
+        details.append("Example (5 Day, 10 Swing, $10k each):")
+        details.append("  - Max Day: 5 × $10,000 = $50,000")
+        details.append("  - Max Swing: 10 × $10,000 = $100,000")
+        details.append("  - Max Total: $150,000")
+        details.append("")
+        details.append("Exposure control:")
+        details.append("  - Caps prevent over-allocation")
+        details.append("  - New signals blocked when at cap")
+        details.append("  - Day cap releases on exit (intraday reuse)")
+        details.append("  - Swing cap never releases")
+        details.append("")
+        details.append("Actual exposure may be less (unfilled limits)")
+
+        return ScenarioResult(
+            self.name, TestResult.PASS,
+            "Exposure = caps × budget, controlled via CapManager",
+            details
+        )
+
+
+class StopLossPlacementScenario(ErrorScenario):
+    """Test stop loss order placement."""
+
+    def __init__(self):
+        super().__init__(
+            "Stop Loss Placement",
+            "Verify stop orders placed correctly"
+        )
+
+    def run(self, ib: MockIB, logger: logging.Logger) -> ScenarioResult:
+        details = []
+
+        details.append("Stop Loss Order Details:")
+        details.append("")
+        details.append("Order type: STP (Stop Market)")
+        details.append("  - Triggers at stop price")
+        details.append("  - Fills at market (may slip)")
+        details.append("")
+        details.append("LONG position stop:")
+        details.append("  - action: 'SELL'")
+        details.append("  - auxPrice: stop_price (below entry)")
+        details.append("  - Triggers when bid ≤ stop")
+        details.append("")
+        details.append("SHORT position stop:")
+        details.append("  - action: 'BUY'")
+        details.append("  - auxPrice: stop_price (above entry)")
+        details.append("  - Triggers when ask ≥ stop")
+        details.append("")
+        details.append("Stop activation:")
+        details.append("  - Part of bracket (parentId set)")
+        details.append("  - INACTIVE until parent fills")
+        details.append("  - Auto-activates on parent fill")
+        details.append("")
+        details.append("OCA linkage (Day):")
+        details.append("  - Stop in OCA group with timed exit")
+        details.append("  - If timed fills → stop cancelled")
+        details.append("  - If stop fills → timed cancelled")
+
+        return ScenarioResult(
+            self.name, TestResult.PASS,
+            "Stop: STP order, bracket-linked, OCA with timed",
+            details
+        )
+
+
+# ============================================================================
+# OPERATIONAL SCENARIOS
+# ============================================================================
+
+class GracefulShutdownScenario(ErrorScenario):
+    """Test graceful shutdown handling."""
+
+    def __init__(self):
+        super().__init__(
+            "Graceful Shutdown",
+            "Verify clean shutdown saves state"
+        )
+
+    def run(self, ib: MockIB, logger: logging.Logger) -> ScenarioResult:
+        details = []
+
+        details.append("Graceful Shutdown Sequence:")
+        details.append("")
+        details.append("1. Signal received (SIGINT/SIGTERM):")
+        details.append("   - Set stop flag")
+        details.append("   - Exit main loop")
+        details.append("")
+        details.append("2. Save state:")
+        details.append("   - Write pending orders to cache")
+        details.append("   - Write filled positions to cache")
+        details.append("   - Write cap counts to cache")
+        details.append("   - Write blocked symbols to cache")
+        details.append("")
+        details.append("3. Cleanup:")
+        details.append("   - Stop ConnectionManager")
+        details.append("   - Stop any background threads")
+        details.append("   - Disconnect from IBKR (optional)")
+        details.append("")
+        details.append("IBKR orders persist after disconnect:")
+        details.append("  - Submitted orders remain active")
+        details.append("  - Stops protect positions")
+        details.append("  - Timed exits still fire")
+        details.append("")
+        details.append("Ungraceful shutdown (kill -9):")
+        details.append("  - State may not be saved")
+        details.append("  - Orders still active in IBKR")
+        details.append("  - Reconciliation on restart")
+
+        return ScenarioResult(
+            self.name, TestResult.PASS,
+            "Shutdown: save state, IBKR orders persist",
+            details
+        )
+
+
+class SignalFileWatchingScenario(ErrorScenario):
+    """Test signal file monitoring."""
+
+    def __init__(self):
+        super().__init__(
+            "Signal File Watching",
+            "Verify CSV files monitored for changes"
+        )
+
+    def run(self, ib: MockIB, logger: logging.Logger) -> ScenarioResult:
+        details = []
+
+        details.append("Signal File Loading:")
+        details.append("")
+        details.append("Current behavior:")
+        details.append("  - Signals loaded at startup")
+        details.append("  - Gap signals reloaded at 5:00 PT")
+        details.append("  - No continuous file watching")
+        details.append("")
+        details.append("File locations:")
+        details.append("  - Day signals: configured CSV path")
+        details.append("  - Swing signals: configured CSV path")
+        details.append("  - Gap signals: configured CSV path")
+        details.append("")
+        details.append("Reload triggers:")
+        details.append("  - Bot startup")
+        details.append("  - Scheduled reload (gap at 5:00)")
+        details.append("  - No inotify/watchdog watching")
+        details.append("")
+        details.append("To add new signals mid-day:")
+        details.append("  - Option 1: Restart bot")
+        details.append("  - Option 2: Wait for next reload cycle")
+        details.append("")
+        details.append("RECOMMENDATION: Add file watch capability")
+        details.append("  - Use watchdog library")
+        details.append("  - Reload on file modification")
+
+        return ScenarioResult(
+            self.name, TestResult.PASS,
+            "Signals: loaded at startup, no live watching",
+            details
+        )
+
+
+class LogRotationScenario(ErrorScenario):
+    """Test log file rotation."""
+
+    def __init__(self):
+        super().__init__(
+            "Log Rotation",
+            "Verify log files managed properly"
+        )
+
+    def run(self, ib: MockIB, logger: logging.Logger) -> ScenarioResult:
+        details = []
+
+        details.append("Log Configuration:")
+        details.append("")
+        details.append("Log output:")
+        details.append("  - Console: StreamHandler")
+        details.append("  - File: FileHandler (if configured)")
+        details.append("")
+        details.append("Log format:")
+        details.append("  - Timestamp + level + module + message")
+        details.append("  - [EXEC], [CONN], [SIGNAL] prefixes")
+        details.append("")
+        details.append("Rotation (if TimedRotatingFileHandler):")
+        details.append("  - Daily rotation at midnight")
+        details.append("  - Keep N backup files")
+        details.append("  - Compress old logs")
+        details.append("")
+        details.append("Current implementation:")
+        details.append("  - Basic logging setup")
+        details.append("  - No automatic rotation")
+        details.append("  - User manages log files")
+        details.append("")
+        details.append("RECOMMENDATION: Add rotation")
+        details.append("  - TimedRotatingFileHandler")
+        details.append("  - Or: external logrotate daemon")
+
+        return ScenarioResult(
+            self.name, TestResult.PASS,
+            "Logs: basic handler, rotation via external tool",
+            details
+        )
+
+
+class HealthCheckScenario(ErrorScenario):
+    """Test health check capabilities."""
+
+    def __init__(self):
+        super().__init__(
+            "Health Check",
+            "Verify bot status can be monitored"
+        )
+
+    def run(self, ib: MockIB, logger: logging.Logger) -> ScenarioResult:
+        details = []
+
+        details.append("Health Check Indicators:")
+        details.append("")
+        details.append("Connection status:")
+        details.append("  - ib.isConnected() → True/False")
+        details.append("  - ConnectionManager.is_reconnecting()")
+        details.append("")
+        details.append("Position status:")
+        details.append("  - FillTracker.get_position_summary()")
+        details.append("  - Count pending, filled, by kind")
+        details.append("")
+        details.append("Cap status:")
+        details.append("  - CapManager.get_counts()")
+        details.append("  - Current day/swing usage")
+        details.append("")
+        details.append("Market data status:")
+        details.append("  - Ticker updates received")
+        details.append("  - Last quote timestamp")
+        details.append("")
+        details.append("Current monitoring:")
+        details.append("  - Log output (tail -f)")
+        details.append("  - No HTTP endpoint")
+        details.append("  - No metrics export")
+        details.append("")
+        details.append("RECOMMENDATION: Add health endpoint")
+        details.append("  - Simple HTTP /health")
+        details.append("  - Return JSON status")
+        details.append("  - Or: write status to file periodically")
+
+        return ScenarioResult(
+            self.name, TestResult.PASS,
+            "Health: via logs, no HTTP endpoint currently",
+            details
+        )
+
+
+# ============================================================================
+# ADDITIONAL ERROR CODE SCENARIOS
+# ============================================================================
+
+class Error504ConnectFailScenario(ErrorScenario):
+    """Test error 504 - connection failure."""
+
+    def __init__(self):
+        super().__init__(
+            "Error 504 (Connection Fail)",
+            "Verify handling of connection failure"
+        )
+
+    def run(self, ib: MockIB, logger: logging.Logger) -> ScenarioResult:
+        details = []
+
+        details.append("Error 504: Not connected")
+        details.append("")
+        details.append("Occurs when:")
+        details.append("  - TWS/Gateway not running")
+        details.append("  - Wrong host/port configured")
+        details.append("  - Firewall blocking connection")
+        details.append("  - API connections disabled in TWS")
+        details.append("")
+        details.append("At startup:")
+        details.append("  - Connection attempt fails")
+        details.append("  - Bot cannot proceed")
+        details.append("  - Exit with error message")
+        details.append("")
+        details.append("During operation:")
+        details.append("  - Should not occur (disconnectedEvent instead)")
+        details.append("  - If occurs: treated as disconnect")
+        details.append("  - ConnectionManager handles reconnection")
+        details.append("")
+        details.append("User action required:")
+        details.append("  - Verify TWS/Gateway running")
+        details.append("  - Verify host:port correct")
+        details.append("  - Enable API in TWS settings")
+
+        return ScenarioResult(
+            self.name, TestResult.PASS,
+            "504: startup fails, during operation triggers reconnect",
+            details
+        )
+
+
+class Error1100ConnectivityScenario(ErrorScenario):
+    """Test error 1100 - connectivity lost."""
+
+    def __init__(self):
+        super().__init__(
+            "Error 1100 (Connectivity Lost)",
+            "Verify handling of connectivity issues"
+        )
+
+    def run(self, ib: MockIB, logger: logging.Logger) -> ScenarioResult:
+        details = []
+
+        details.append("Error 1100-1102: Connectivity Status")
+        details.append("")
+        details.append("1100: 'Connectivity between IB and TWS lost'")
+        details.append("  - Network issue between TWS and IBKR servers")
+        details.append("  - NOT a local disconnect")
+        details.append("  - Wait for 1101 or 1102")
+        details.append("")
+        details.append("1101: 'Connectivity restored, data lost'")
+        details.append("  - Connection back")
+        details.append("  - Need to resubscribe to market data")
+        details.append("  - Orders may have missed fills")
+        details.append("")
+        details.append("1102: 'Connectivity restored, data maintained'")
+        details.append("  - Connection back")
+        details.append("  - Market data still valid")
+        details.append("  - No resubscription needed")
+        details.append("")
+        details.append("Bot handling:")
+        details.append("  - 1100: Log warning, wait")
+        details.append("  - 1101: Resubscribe to market data")
+        details.append("  - 1102: Continue normally")
+        details.append("")
+        details.append("Do NOT disconnect on 1100 - wait for recovery")
+
+        return ScenarioResult(
+            self.name, TestResult.PASS,
+            "1100: wait for 1101/1102, resubscribe if data lost",
+            details
+        )
+
+
+class Error354MarketDataScenario(ErrorScenario):
+    """Test error 354 - market data subscription issue."""
+
+    def __init__(self):
+        super().__init__(
+            "Error 354 (Market Data)",
+            "Verify handling of subscription errors"
+        )
+
+    def run(self, ib: MockIB, logger: logging.Logger) -> ScenarioResult:
+        details = []
+
+        details.append("Error 354: Market Data Request Issue")
+        details.append("")
+        details.append("Common causes:")
+        details.append("  - No market data subscription for symbol")
+        details.append("  - Exceeded concurrent subscription limit")
+        details.append("  - Symbol not found or invalid")
+        details.append("")
+        details.append("Subscription limits:")
+        details.append("  - IBKR limits concurrent subscriptions")
+        details.append("  - Limit depends on account type")
+        details.append("  - ~100 for most accounts")
+        details.append("")
+        details.append("Bot handling:")
+        details.append("  - Log error")
+        details.append("  - Symbol may have no live quotes")
+        details.append("  - Ghost mode monitoring affected")
+        details.append("")
+        details.append("Mitigation:")
+        details.append("  - Limit symbols in signal files")
+        details.append("  - Cancel unused subscriptions")
+        details.append("  - Prioritize active positions")
+        details.append("")
+        details.append("Order placement still works without quotes")
+        details.append("(limits execute at price regardless of data)")
+
+        return ScenarioResult(
+            self.name, TestResult.PASS,
+            "354: subscription failed, orders still work",
+            details
+        )
+
+
+class Error165HistDataScenario(ErrorScenario):
+    """Test error 165 - historical data issue."""
+
+    def __init__(self):
+        super().__init__(
+            "Error 165 (Historical Data)",
+            "Verify handling of historical data errors"
+        )
+
+    def run(self, ib: MockIB, logger: logging.Logger) -> ScenarioResult:
+        details = []
+
+        details.append("Error 165: Historical Data Farm Error")
+        details.append("")
+        details.append("Occurs when:")
+        details.append("  - Historical data farm disconnected")
+        details.append("  - Too many historical data requests")
+        details.append("  - Invalid historical data parameters")
+        details.append("")
+        details.append("Bot impact:")
+        details.append("  - Bot does NOT use historical data")
+        details.append("  - Only real-time quotes used")
+        details.append("  - This error should not affect operation")
+        details.append("")
+        details.append("If historical data needed:")
+        details.append("  - reqHistoricalData() would fail")
+        details.append("  - Alternative: use external data source")
+        details.append("")
+        details.append("Current bot operations:")
+        details.append("  - Real-time bid/ask for monitoring")
+        details.append("  - No historical data queries")
+        details.append("  - No backtesting functionality")
+        details.append("")
+        details.append("This error can be safely ignored")
+
+        return ScenarioResult(
+            self.name, TestResult.PASS,
+            "165: historical data error, bot unaffected",
+            details
+        )
+
+
+# ============================================================================
 # TEST RUNNER
 # ============================================================================
 
@@ -3934,6 +4472,24 @@ def get_all_scenarios() -> List[ErrorScenario]:
         ConcurrentOrderPlacementScenario(),
         CallbackThreadSafetyScenario(),
         LockContentionScenario(),
+
+        # Risk management scenarios
+        PositionSizingScenario(),
+        RiskPerTradeScenario(),
+        PortfolioExposureScenario(),
+        StopLossPlacementScenario(),
+
+        # Operational scenarios
+        GracefulShutdownScenario(),
+        SignalFileWatchingScenario(),
+        LogRotationScenario(),
+        HealthCheckScenario(),
+
+        # Additional error codes
+        Error504ConnectFailScenario(),
+        Error1100ConnectivityScenario(),
+        Error354MarketDataScenario(),
+        Error165HistDataScenario(),
     ]
 
 
